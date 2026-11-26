@@ -1,0 +1,23 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Lancer l'application (Streamlit)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "streamlit",
+            "args": ["run", "app.py"],
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true
+        },
+        {
+            "name": "Lancer les tests",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "pytest",
+            "args": ["tests", "-v"],
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true
+        }
+    ]
+}

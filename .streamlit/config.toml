@@ -1,0 +1,25 @@
+# Thème CAP 500 et réglages du serveur
+
+[theme]
+base = "light"
+primaryColor = "#0B2545"
+backgroundColor = "#F4F6FA"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#1B2433"
+
+[theme.sidebar]
+backgroundColor = "#0B2545"
+secondaryBackgroundColor = "#13315C"
+textColor = "#DCE3EE"
+primaryColor = "#C9A227"
+
+[client]
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
+
+[server]
+# Accepte les connexions des autres ordinateurs du même réseau (Wi-Fi)
+address = "0.0.0.0"
+port = 8501

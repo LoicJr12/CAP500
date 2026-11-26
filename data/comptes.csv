@@ -1,0 +1,12 @@
+# Comptes annuels en millions d'euros (BPA et dividende en euros par action). VALEURS APPROXIMATIVES A VERIFIER dans les rapports annuels. Ajouter une ligne par nouvelle annee.
+code;nom;annee;chiffre_affaires;resultat_net;bpa;dette_nette;ebitda;dividende;source
+RMS.PA;Hermès;2023;13427;4311;41,20;-11200;6300;15,00;approximatif - à vérifier
+RMS.PA;Hermès;2024;15170;4603;44,00;-12200;6900;16,00;approximatif - à vérifier
+AI.PA;Air Liquide;2023;27608;3078;5,36;10400;7400;3,20;approximatif - à vérifier
+AI.PA;Air Liquide;2024;27058;3306;5,73;10150;7600;3,30;approximatif - à vérifier
+TTE.PA;TotalEnergies;2023;202000;19800;8,10;13500;45700;3,01;approximatif (converti de dollars) - à vérifier
+TTE.PA;TotalEnergies;2024;181000;14600;6,30;19000;39800;3,22;approximatif (converti de dollars) - à vérifier
+DSY.PA;Dassault Systèmes;2023;5951;1051;0,80;-1000;2100;0,23;approximatif - à vérifier
+DSY.PA;Dassault Systèmes;2024;6213;1201;0,92;-1700;2250;0,26;approximatif - à vérifier
+CAP.PA;Capgemini;2023;22522;1663;9,66;2000;3300;3,40;approximatif - à vérifier
+CAP.PA;Capgemini;2024;22096;1671;9,77;2000;3300;3,40;approximatif - à vérifier

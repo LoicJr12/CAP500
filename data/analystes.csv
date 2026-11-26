@@ -1,0 +1,7 @@
+# Objectifs de cours des analystes, a mettre a jour chaque semaine (ABC Bourse rubrique Analyses, Zonebourse). Laisser l'objectif vide si inconnu.
+code;nom;objectif;nb_analystes;avis;source;date
+RMS.PA;Hermès;;;;à compléter;
+AI.PA;Air Liquide;209;1;achat;Citi;03/11/2026
+TTE.PA;TotalEnergies;94;1;achat;Kepler Cheuvreux;17/11/2026
+DSY.PA;Dassault Systèmes;23,5;1;neutre;Citi;17/11/2026
+CAP.PA;Capgemini;150;3;achat;Médiane Barclays (145), Goldman Sachs (170), Citi (150);03/11/2026
