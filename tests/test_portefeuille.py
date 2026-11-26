@@ -132,11 +132,11 @@ def test_vente_automatique_plus_tot_en_profil_prudent(uid):
     assert niveau == "vente" and texte(message).startswith("Limite de 6 % atteinte")
 
 
-def test_repartition_respecte_le_profil(uid):
-    ok, message = portefeuille.repartir(uid, {"AI.PA": 250_000}, {"AI.PA": 200.0}, TAUX)
-    assert not ok and "ne doit pas dépasser 200 000 €" in texte(message)
-    ok, message = portefeuille.repartir(uid, {c: 95_000 for c in config.ACTIONS}, {c: 100.0 for c in config.ACTIONS}, TAUX)
-    assert not ok and "gardez au moins 50 000 €" in texte(message)
+def test_repartition_tout_le_capital_sur_une_action(uid):         # le client peut tout mettre sur une action
+    ok, _ = portefeuille.repartir(uid, {"AI.PA": 500_000}, {"AI.PA": 200.0}, TAUX)
+    assert ok
+    assert portefeuille.positions(uid)["AI.PA"]["quantite"] == portefeuille.quantite_possible(500_000, 200.0, TAUX)
+    assert portefeuille.liquidites(uid) >= 0
 
 
 @pytest.mark.parametrize("profil", list(config.PROFILS))

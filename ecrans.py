@@ -508,11 +508,12 @@ def ecran_repartition(prix: dict, analyses: dict) -> None:
         c2.button("Proposer une répartition", type="primary", icon=":material/auto_awesome:", width="stretch",
                   on_click=proposer_repartition, args=({c: a.score for c, a in analyses.items()},))
 
-    montants, erreurs = {}, []
+    montants, erreurs, depassements = {}, [], []
     with st.container(border=True):
         st.markdown("### Combien sur chaque entreprise ?")
-        st.caption(f"Votre profil {r['profil']} : au plus {euros(plafond, 0)} sur une même entreprise, "
-                   f"et au moins {euros(reserve, 0)} gardés de côté.")
+        st.caption(f"Votre profil {r['profil']} : nous conseillons au plus {euros(plafond, 0)} sur une même "
+                   f"entreprise, et au moins {euros(reserve, 0)} gardés de côté. "
+                   f"Ce sont des repères : vous restez libre de placer davantage.")
         largeurs = [2.5, 1.1, 2, 1.1, 0.9]
         for colonne, titre in zip(st.columns(largeurs), ["Entreprise", "Prix d'une action", "Montant à investir (€)",
                                                          "Nombre d'actions", "Part"]):
@@ -528,8 +529,7 @@ def ecran_repartition(prix: dict, analyses: dict) -> None:
                                    exemple="0")
             montants[code] = montant or 0.0
             if montants[code] > plafond + 0.01:
-                erreurs.append(f"{nom} : {euros(montants[code], 0)}, c'est plus que le maximum de "
-                               f"{euros(plafond, 0)} prévu par votre profil.")
+                depassements.append((code, nom, montants[code]))
             nb = portefeuille.quantite_possible(montants[code], prix.get(code), taux)
             html(f"<span class='hk-ligne'>{nombre(nb, 0)}</span>", cols[3])
             html(f"<span class='hk-ligne'>{pourcent(montants[code] / config.CAPITAL, 0)}</span>", cols[4])
@@ -547,10 +547,10 @@ def ecran_repartition(prix: dict, analyses: dict) -> None:
 
     if total > config.CAPITAL:
         erreurs.append(f"Le total dépasse vos 500 000 € de {euros(total - config.CAPITAL)}.")
-    elif reste < reserve - 0.01:
-        erreurs.append(f"Gardez au moins {euros(reserve, 0)} de côté (profil {r['profil']}).")
     for erreur in erreurs:
         st.error(erreur)
+    if not erreurs:
+        avertir_concentration(depassements, reste, reserve, plafond, r["profil"])
     if erreurs or total <= 0:
         if total <= 0:
             st.caption("Saisissez au moins un montant, ou cliquez sur « Proposer une répartition ».")
@@ -560,12 +560,36 @@ def ecran_repartition(prix: dict, analyses: dict) -> None:
         st.button("Valider ma répartition", type="primary", icon=":material/check:",
                   on_click=lambda: st.session_state.update(repartition_en_attente=True))
     else:
-        st.warning(f"Vous allez investir {euros(total)} au prix du jour. On confirme ?")
+        tout_sur_une = any(m >= TOUT_LE_CAPITAL * config.CAPITAL for m in montants.values())
+        st.warning(f"Vous allez investir {euros(total)} au prix du jour"
+                   f"{', dont tout votre capital sur une seule action' if tout_sur_une else ''}. On confirme ?")
         c1, c2, _ = st.columns([1, 1, 2])
         c1.button("Oui, investir", type="primary", icon=":material/check:", on_click=confirmer_repartition,
                   width="stretch")
         c2.button("Modifier", icon=":material/edit:", width="stretch",
                   on_click=lambda: st.session_state.pop("repartition_en_attente", None))
+
+
+TOUT_LE_CAPITAL = 0.99   # à partir de 99 % du capital sur une action, on parle de « tout le capital »
+
+
+def avertir_concentration(depassements: list, reste: float, reserve: float, plafond: float, profil: str) -> None:
+    """Messages (non bloquants) quand la répartition dépasse les repères du profil."""
+    for code, nom, montant in depassements:
+        if montant >= TOUT_LE_CAPITAL * config.CAPITAL:
+            st.error(f"**Vous êtes en train d'investir tout votre capital dans {nom}.** "
+                     f"Pour votre profil {profil}, nous vous conseillons au maximum {euros(plafond, 0)} "
+                     f"({pourcent(plafond / config.CAPITAL, 0)} du capital) sur une même entreprise. "
+                     f"Tout placer sur une seule action est **très risqué** : si son cours baisse, "
+                     f"c'est tout votre portefeuille qui baisse. Vous pouvez continuer, mais en connaissance de cause.",
+                     icon=":material/warning:")
+        else:
+            st.warning(f"{nom} : {euros(montant, 0)} ({pourcent(montant / config.CAPITAL, 0)} du capital). "
+                       f"Pour votre profil {profil}, nous conseillons au maximum {euros(plafond, 0)}. "
+                       f"Cette concentration augmente le risque.", icon=":material/warning:")
+    if reste < reserve - 0.01 and not any(m >= TOUT_LE_CAPITAL * config.CAPITAL for _, _, m in depassements):
+        st.warning(f"Votre profil {profil} conseille de garder au moins {euros(reserve, 0)} de côté "
+                   f"(il vous reste {euros(reste, 0)}).", icon=":material/warning:")
 
 
 def proposer_repartition(scores: dict) -> None:

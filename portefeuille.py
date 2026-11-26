@@ -197,17 +197,11 @@ def repartir(uid: int, montants: dict, prix: dict, taux: float):
         return False, f"Le total dépasse votre capital de {euros(total - config.CAPITAL)}."
     if total <= 0:
         return False, "Saisissez au moins un montant."
-    r = base.lire_reglages(uid)
+    # Le plafond par action et la réserve du profil sont des conseils : le client peut investir
+    # jusqu'à 100 % de son capital sur une seule action (l'écran l'avertit du risque).
     for code, montant in montants.items():
         if montant > 0 and code not in prix:
             return False, f"Cours indisponible pour {config.ACTIONS[code]} : réessayez plus tard."
-        if montant > r["max_par_action"] * config.CAPITAL + 0.01:
-            return False, (f"Profil {r['profil']} : {config.ACTIONS[code]} ne doit pas dépasser "
-                           f"{euros(r['max_par_action'] * config.CAPITAL, 0)} "
-                           f"({pourcent(r['max_par_action'], 0)} du capital).")
-    if config.CAPITAL - total < r["reserve_min"] * config.CAPITAL - 0.01:
-        return False, (f"Profil {r['profil']} : gardez au moins {euros(r['reserve_min'] * config.CAPITAL, 0)} "
-                       f"en liquidités ({pourcent(r['reserve_min'], 0)} du capital).")
 
     lignes = 0
     for code, montant in montants.items():
