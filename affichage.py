@@ -10,16 +10,21 @@ def _vide(x) -> bool:
     return x is None or (isinstance(x, float) and math.isnan(x))
 
 
+# Espaces insécables : « 500 000 € » ne sera jamais coupé en fin de ligne.
+ESPACE_MILLIERS = "\u202f"   # espace fine insécable (norme française)
+ESPACE = "\u00a0"            # espace insécable avant € et %
+
+
 def nombre(x, decimales: int = 2) -> str:
     """1234567.891 -> '1 234 567,89'"""
     if _vide(x):
         return "—"
-    return f"{x:,.{decimales}f}".replace(",", " ").replace(".", ",").replace("-", "−")
+    return f"{x:,.{decimales}f}".replace(",", ESPACE_MILLIERS).replace(".", ",").replace("-", "−")
 
 
 def euros(x, decimales: int = 2) -> str:
     """1234.5 -> '1 234,50 €'"""
-    return "—" if _vide(x) else f"{nombre(x, decimales)} €"
+    return "—" if _vide(x) else f"{nombre(x, decimales)}{ESPACE}€"
 
 
 def pourcent(x, decimales: int = 1, signe: bool = False) -> str:
@@ -27,7 +32,7 @@ def pourcent(x, decimales: int = 1, signe: bool = False) -> str:
     if _vide(x):
         return "—"
     texte = f"{x * 100:+.{decimales}f}" if signe else f"{x * 100:.{decimales}f}"
-    return texte.replace(".", ",").replace("-", "−") + " %"
+    return texte.replace(".", ",").replace("-", "−") + ESPACE + "%"
 
 
 def ecart(x, decimales: int = 1):

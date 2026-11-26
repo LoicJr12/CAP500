@@ -12,14 +12,16 @@ from pathlib import Path
 import config
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS utilisateur (
-    id              INTEGER PRIMARY KEY CHECK (id = 1),
-    identifiant     TEXT NOT NULL,
+CREATE TABLE IF NOT EXISTS utilisateurs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    identifiant     TEXT NOT NULL UNIQUE COLLATE NOCASE,
     sel             TEXT NOT NULL,
-    hash            TEXT NOT NULL,
-    code_hash       TEXT,               -- code de récupération (haché)
+    hash            TEXT NOT NULL,      -- mot de passe haché (jamais en clair)
+    code_hash       TEXT,               -- code de récupération haché
     essais          INTEGER NOT NULL DEFAULT 0,
-    bloque_jusqua   TEXT
+    bloque_jusqua   TEXT,
+    portefeuille    INTEGER NOT NULL DEFAULT 1,   -- n° du portefeuille en cours (+1 à chaque remise à zéro)
+    cree_le         TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS cours (
@@ -43,34 +45,46 @@ CREATE TABLE IF NOT EXISTS actualites (
 );
 
 CREATE TABLE IF NOT EXISTS ordres (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    date        TEXT NOT NULL,
-    code        TEXT NOT NULL,
-    sens        TEXT NOT NULL CHECK (sens IN ('achat', 'vente')),
-    quantite    INTEGER NOT NULL CHECK (quantite > 0),
-    prix        REAL NOT NULL CHECK (prix > 0),
-    frais       REAL NOT NULL,
-    automatique INTEGER NOT NULL DEFAULT 0
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    utilisateur_id  INTEGER NOT NULL REFERENCES utilisateurs (id),
+    portefeuille    INTEGER NOT NULL DEFAULT 1,
+    date            TEXT NOT NULL,
+    code            TEXT NOT NULL,
+    sens            TEXT NOT NULL CHECK (sens IN ('achat', 'vente')),
+    quantite        INTEGER NOT NULL CHECK (quantite > 0),
+    prix            REAL NOT NULL CHECK (prix > 0),
+    frais           REAL NOT NULL,
+    automatique     INTEGER NOT NULL DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS ordres_par_compte ON ordres (utilisateur_id, portefeuille);
 
 -- Un ordre enregistré ne peut être ni modifié ni supprimé (traçabilité).
+-- Remettre un portefeuille à zéro ouvre un nouveau portefeuille : les anciens ordres restent archivés.
 CREATE TRIGGER IF NOT EXISTS ordres_non_modifiables BEFORE UPDATE ON ordres
 BEGIN SELECT RAISE(ABORT, 'Un ordre enregistré ne peut pas être modifié.'); END;
 CREATE TRIGGER IF NOT EXISTS ordres_non_supprimables BEFORE DELETE ON ordres
 BEGIN SELECT RAISE(ABORT, 'Un ordre enregistré ne peut pas être supprimé.'); END;
 
 CREATE TABLE IF NOT EXISTS historique (
-    date        TEXT PRIMARY KEY,
-    valeur      REAL NOT NULL,
-    liquidites  REAL NOT NULL,
-    cac40       REAL
+    utilisateur_id  INTEGER NOT NULL,
+    portefeuille    INTEGER NOT NULL,
+    date            TEXT NOT NULL,
+    valeur          REAL NOT NULL,
+    liquidites      REAL NOT NULL,
+    cac40           REAL,
+    PRIMARY KEY (utilisateur_id, portefeuille, date)
 );
 
 CREATE TABLE IF NOT EXISTS reglages (
-    cle         TEXT PRIMARY KEY,
-    valeur      TEXT NOT NULL
+    utilisateur_id  INTEGER NOT NULL,
+    cle             TEXT NOT NULL,
+    valeur          TEXT NOT NULL,
+    PRIMARY KEY (utilisateur_id, cle)
 );
 """
+
+# Réglages qu'un fichier de sauvegarde peut contenir
+CLES_REGLAGES = {*config.REGLAGES_DEFAUT, "profil", "profil_defini", "depart_fait", "limite_atteinte"}
 
 
 def connexion() -> sqlite3.Connection:
@@ -92,19 +106,56 @@ def ouvrir():
 
 
 def initialiser() -> None:
-    """Crée les tables si elles n'existent pas encore."""
+    """Crée les tables si elles n'existent pas encore (et convertit une base de l'ancienne version)."""
+    with ouvrir() as con:
+        tables = {l[0] for l in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    if "utilisateur" in tables:
+        _convertir_ancienne_base()
     with ouvrir() as con:
         con.executescript(SCHEMA)
-        colonnes = [c["name"] for c in con.execute("PRAGMA table_info(utilisateur)")]
-        if "code_hash" not in colonnes:   # base créée avec une version précédente
-            con.execute("ALTER TABLE utilisateur ADD COLUMN code_hash TEXT")
 
 
-# ---------- Réglages ----------
-def lire_reglages() -> dict:
-    """Réglages par défaut, complétés par ceux du profil de risque puis par ceux enregistrés."""
+def _convertir_ancienne_base() -> None:
+    """Ancienne version (un seul compte) : le compte et son portefeuille deviennent le compte n° 1."""
+    copie_securite("avant_conversion")
     with ouvrir() as con:
-        stockes = {l["cle"]: json.loads(l["valeur"]) for l in con.execute("SELECT cle, valeur FROM reglages")}
+        con.executescript("""
+            DROP TRIGGER IF EXISTS ordres_non_modifiables;
+            DROP TRIGGER IF EXISTS ordres_non_supprimables;
+            ALTER TABLE ordres RENAME TO ancien_ordres;
+            ALTER TABLE historique RENAME TO ancien_historique;
+            ALTER TABLE reglages RENAME TO ancien_reglages;
+        """)
+        con.executescript(SCHEMA)
+        colonnes = {c["name"] for c in con.execute("PRAGMA table_info(utilisateur)")}
+        code = "code_hash" if "code_hash" in colonnes else "NULL"
+        con.execute(f"""INSERT INTO utilisateurs (id, identifiant, sel, hash, code_hash, essais, bloque_jusqua, cree_le)
+                        SELECT 1, identifiant, sel, hash, {code}, 0, NULL, datetime('now') FROM utilisateur""")
+        if con.execute("SELECT COUNT(*) FROM utilisateurs").fetchone()[0]:
+            con.executescript("""
+                INSERT INTO ordres (utilisateur_id, portefeuille, date, code, sens, quantite, prix, frais, automatique)
+                    SELECT 1, 1, date, code, sens, quantite, prix, frais, automatique FROM ancien_ordres ORDER BY id;
+                INSERT INTO historique SELECT 1, 1, date, valeur, liquidites, cac40 FROM ancien_historique;
+                INSERT INTO reglages SELECT 1, cle, valeur FROM ancien_reglages;
+            """)
+        con.executescript("""
+            DROP TABLE ancien_ordres; DROP TABLE ancien_historique; DROP TABLE ancien_reglages;
+            DROP TABLE utilisateur;
+        """)
+
+
+def portefeuille_courant(uid: int) -> int:
+    with ouvrir() as con:
+        ligne = con.execute("SELECT portefeuille FROM utilisateurs WHERE id = ?", (uid,)).fetchone()
+    return ligne["portefeuille"] if ligne else 1
+
+
+# ---------- Réglages (propres à chaque compte) ----------
+def lire_reglages(uid: int) -> dict:
+    """Réglages par défaut, complétés par ceux du profil de risque puis par ceux du compte."""
+    with ouvrir() as con:
+        stockes = {l["cle"]: json.loads(l["valeur"])
+                   for l in con.execute("SELECT cle, valeur FROM reglages WHERE utilisateur_id = ?", (uid,))}
     profil = stockes.get("profil")
     if profil not in config.PROFILS:
         profil = config.PROFIL_DEFAUT
@@ -115,22 +166,24 @@ def lire_reglages() -> dict:
     return reglages
 
 
-def choisir_profil(profil: str) -> None:
+def ecrire_reglage(uid: int, cle: str, valeur) -> None:
+    with ouvrir() as con:
+        con.execute("INSERT OR REPLACE INTO reglages (utilisateur_id, cle, valeur) VALUES (?, ?, ?)",
+                    (uid, cle, json.dumps(valeur)))
+
+
+def supprimer_reglages(uid: int, cles) -> None:
+    with ouvrir() as con:
+        con.executemany("DELETE FROM reglages WHERE utilisateur_id = ? AND cle = ?", [(uid, c) for c in cles])
+
+
+def choisir_profil(uid: int, profil: str) -> None:
     """Applique un profil de risque : ses seuils remplacent ceux réglés à la main."""
     if profil not in config.PROFILS:
         raise ValueError(f"Profil inconnu : {profil}")
-    with ouvrir() as con:
-        con.execute("DELETE FROM reglages WHERE cle IN ('seuil_achat', 'seuil_vente')")
-    ecrire_reglage("profil", profil)
-    ecrire_reglage("profil_defini", True)
-
-
-def ecrire_reglage(cle: str, valeur) -> None:
-    with ouvrir() as con:
-        con.execute(
-            "INSERT OR REPLACE INTO reglages (cle, valeur) VALUES (?, ?)",
-            (cle, json.dumps(valeur)),
-        )
+    supprimer_reglages(uid, ["seuil_achat", "seuil_vente"])
+    ecrire_reglage(uid, "profil", profil)
+    ecrire_reglage(uid, "profil_defini", True)
 
 
 # ---------- Sauvegardes ----------
@@ -158,42 +211,76 @@ def copie_securite(motif: str) -> Path:
     return cible
 
 
-def exporter_base() -> bytes:
-    """Contenu complet de la base, pour le télécharger (utile quand l'appli est en ligne)."""
-    with tempfile.TemporaryDirectory() as dossier:
-        chemin = Path(dossier) / "export.db"
-        with closing(sqlite3.connect(config.DB_PATH)) as source, closing(sqlite3.connect(chemin)) as copie:
-            source.backup(copie)
-        return chemin.read_bytes()
-
-
-def restaurer_base(contenu: bytes):
-    """Remplace la base par un fichier téléchargé auparavant. Renvoie (ok, message)."""
-    with tempfile.TemporaryDirectory() as dossier:
-        chemin = Path(dossier) / "import.db"
-        chemin.write_bytes(contenu)
-        try:
-            with closing(sqlite3.connect(chemin)) as con:
-                tables = {l[0] for l in con.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-        except sqlite3.DatabaseError:
-            return False, "Ce fichier n'est pas une sauvegarde de l'application."
-        if not {"utilisateur", "ordres", "reglages", "cours"} <= tables:
-            return False, "Ce fichier n'est pas une sauvegarde de l'application."
-        copie_securite("avant_restauration")
-        with closing(sqlite3.connect(chemin)) as source, closing(sqlite3.connect(config.DB_PATH)) as cible:
-            source.backup(cible)
-    initialiser()
-    return True, "Sauvegarde restaurée."
-
-
-def reinitialiser_portefeuille() -> None:
-    """Repart de zéro : supprime les ordres et l'historique (le compte et les cours sont gardés)."""
+def exporter_compte(uid: int) -> bytes:
+    """Le portefeuille en cours du compte (ordres, historique, réglages) dans un fichier JSON."""
+    pf = portefeuille_courant(uid)
     with ouvrir() as con:
-        con.executescript(
-            """
-            DROP TABLE IF EXISTS ordres;
-            DROP TABLE IF EXISTS historique;
-            DELETE FROM reglages WHERE cle IN ('depart_fait', 'limite_atteinte');
-            """
-        )
-    initialiser()
+        identifiant = con.execute("SELECT identifiant FROM utilisateurs WHERE id = ?", (uid,)).fetchone()[0]
+        ordres = [dict(l) for l in con.execute(
+            "SELECT date, code, sens, quantite, prix, frais, automatique FROM ordres "
+            "WHERE utilisateur_id = ? AND portefeuille = ? ORDER BY id", (uid, pf))]
+        historique = [dict(l) for l in con.execute(
+            "SELECT date, valeur, liquidites, cac40 FROM historique "
+            "WHERE utilisateur_id = ? AND portefeuille = ? ORDER BY date", (uid, pf))]
+        reglages = {l["cle"]: json.loads(l["valeur"]) for l in con.execute(
+            "SELECT cle, valeur FROM reglages WHERE utilisateur_id = ?", (uid,))}
+    contenu = {"application": config.NOM_APPLI, "version": 2, "identifiant": identifiant,
+               "exporte_le": datetime.now().isoformat(timespec="seconds"),
+               "reglages": reglages, "ordres": ordres, "historique": historique}
+    return json.dumps(contenu, ensure_ascii=False, indent=1).encode("utf-8")
+
+
+def _ordre_valide(o) -> bool:
+    try:
+        datetime.fromisoformat(str(o["date"]))
+        return (o["code"] in config.ACTIONS and o["sens"] in ("achat", "vente")
+                and isinstance(o["quantite"], int) and not isinstance(o["quantite"], bool) and o["quantite"] > 0
+                and float(o["prix"]) > 0 and float(o["frais"]) >= 0)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def importer_compte(uid: int, contenu: bytes):
+    """
+    Restaure un fichier créé par exporter_compte dans un nouveau portefeuille du compte
+    (le portefeuille actuel reste archivé). Renvoie (ok, message).
+    """
+    try:
+        donnees = json.loads(contenu.decode("utf-8"))
+        ordres, historique, reglages = donnees["ordres"], donnees["historique"], donnees["reglages"]
+        if not (isinstance(ordres, list) and isinstance(historique, list) and isinstance(reglages, dict)):
+            raise ValueError
+    except (UnicodeDecodeError, json.JSONDecodeError, KeyError, TypeError, ValueError):
+        return False, "Ce fichier n'est pas une sauvegarde de l'application."
+    if not all(isinstance(o, dict) and _ordre_valide(o) for o in ordres):
+        return False, "Le fichier contient des ordres invalides : rien n'a été modifié."
+
+    nouveau = portefeuille_courant(uid) + 1
+    with ouvrir() as con:
+        con.execute("UPDATE utilisateurs SET portefeuille = ? WHERE id = ?", (nouveau, uid))
+        con.executemany(
+            "INSERT INTO ordres (utilisateur_id, portefeuille, date, code, sens, quantite, prix, frais, automatique) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            [(uid, nouveau, o["date"], o["code"], o["sens"], o["quantite"], float(o["prix"]), float(o["frais"]),
+              int(bool(o.get("automatique")))) for o in ordres])
+        for h in historique:
+            try:
+                con.execute("INSERT OR REPLACE INTO historique VALUES (?, ?, ?, ?, ?, ?)",
+                            (uid, nouveau, str(h["date"])[:10], float(h["valeur"]), float(h["liquidites"]),
+                             None if h.get("cac40") is None else float(h["cac40"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+        con.execute("DELETE FROM reglages WHERE utilisateur_id = ?", (uid,))
+        for cle, valeur in reglages.items():
+            if cle in CLES_REGLAGES and isinstance(valeur, (int, float, str, bool)):
+                if cle == "profil" and valeur not in config.PROFILS:
+                    continue
+                con.execute("INSERT INTO reglages VALUES (?, ?, ?)", (uid, cle, json.dumps(valeur)))
+    return True, f"Sauvegarde restaurée : {len(ordres)} ordre{'s' if len(ordres) > 1 else ''} récupéré{'s' if len(ordres) > 1 else ''}."
+
+
+def reinitialiser_portefeuille(uid: int) -> None:
+    """Repart de 500 000 € : ouvre un nouveau portefeuille (les anciens ordres restent archivés)."""
+    with ouvrir() as con:
+        con.execute("UPDATE utilisateurs SET portefeuille = portefeuille + 1 WHERE id = ?", (uid,))
+    supprimer_reglages(uid, ["depart_fait", "limite_atteinte"])

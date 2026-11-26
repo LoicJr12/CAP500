@@ -3,7 +3,7 @@ CAP 500 – interface de gestion du portefeuille de 500 000 €.
 Lancer avec :  streamlit run app.py   (ou F5 dans VS Code)
 
 Déroulement (logigramme 1 du dossier de conception) :
-connexion → [profil de risque] → [répartition de départ] → chargement des données et calculs → menu
+connexion ou création de compte → [profil de risque] → [investissement du capital] → chargement des données et calculs → menu
 """
 import time
 from datetime import date
@@ -30,18 +30,23 @@ if st.session_state.get("connecte"):
     else:
         st.session_state["derniere_activite"] = time.time()
 
-# ---------- Connexion (logigramme 2) ----------
+# ---------- Connexion ou création de compte (logigramme 2) ----------
 if not st.session_state.get("connecte"):
     ecrans.ecran_connexion()
     st.stop()
+if "code_a_noter" in st.session_state:          # juste après la création du compte
+    ecrans.ecran_code_recuperation()
+    st.stop()
+
+uid = st.session_state["uid"]
 
 # ---------- Chargement des données (logigramme 4) ----------
 statut = ecrans.actualiser_donnees(date.today().isoformat())
 prix = donnees.cours_actuels()
-reglages = base.lire_reglages()
+reglages = base.lire_reglages(uid)
 
 # ---------- Protection contre les pertes (A8) ----------
-niveau, message = portefeuille.controler_perte(prix, reglages["taux_frais"])
+niveau, message = portefeuille.controler_perte(uid, prix, reglages["taux_frais"])
 
 # ---------- Menu et messages ----------
 ecrans.barre_laterale(statut)
@@ -56,19 +61,23 @@ elif niveau in ("alerte", "limite"):
 analyses = ecrans.analyses_courantes(statut)
 
 # ---------- Affichage de l'écran choisi ----------
-page = st.session_state.get("page", ecrans.PAGES[0])
-if page == "Tableau de bord":
-    ecrans.ecran_tableau_de_bord(analyses, prix)
-elif page == "Répartition de départ":
+page = st.session_state.get("page", "Accueil")
+if page == "Accueil":
+    ecrans.ecran_accueil(analyses, prix)
+elif page == "Investir mon capital":
     ecrans.ecran_repartition(prix, analyses)
-elif page == "Fiche action":
+elif page == "Les actions":
     ecrans.ecran_fiche_action(analyses)
-elif page == "Achat / vente":
-    ecrans.ecran_achat_vente()
+elif page == "Acheter / vendre":
+    ecrans.ecran_achat_vente(analyses)
 elif page == "Mon profil":
     ecrans.ecran_profil()
+elif page == "Historique":
+    ecrans.ecran_historique()
+elif page == "Réglages":
+    ecrans.ecran_reglages()
 else:
-    ecrans.ecran_historique_reglages()
+    ecrans.ecran_guide()
 
-st.markdown(f"<div class='hk-pied'>{config.NOM_APPLI} · cours Yahoo Finance, actualités Google Actualités · "
-            "conseils indicatifs</div>", unsafe_allow_html=True)
+st.markdown(f"<div class='hk-pied'>{config.NOM_APPLI} · argent virtuel, vrais prix de la Bourse de Paris "
+            "(Yahoo Finance) · les conseils ne sont pas une garantie de gain</div>", unsafe_allow_html=True)

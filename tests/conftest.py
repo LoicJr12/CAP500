@@ -22,6 +22,15 @@ def base_temporaire(tmp_path, monkeypatch):
     base.initialiser()
 
 
+@pytest.fixture
+def uid():
+    """Un compte de test avec son portefeuille neuf de 500 000 €."""
+    import auth
+    ok, _, numero = auth.creer_compte("client", "MotDePasse2026", "MotDePasse2026")
+    assert ok
+    return numero
+
+
 def serie_cours(n=260, depart=100.0, tendance=0.0005, volatilite=0.015, graine=1) -> pd.DataFrame:
     """Fabrique des cours fictifs (uniquement pour les tests)."""
     tirage = np.random.default_rng(graine)

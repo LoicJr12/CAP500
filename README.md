@@ -29,9 +29,10 @@ pip install -r requirements.txt
 - **Avec VS Code** : touche **F5** → « Lancer l'application (Streamlit) ».
 - **Ou dans le terminal** : `streamlit run app.py`
 
-La page s'ouvre sur `http://localhost:8501`. À la première ouverture :
-1. créez votre identifiant et votre mot de passe ;
-2. **notez le code de récupération** affiché (il sert si vous oubliez le mot de passe) ;
+La page s'ouvre sur `http://localhost:8501`. Sur la page d'accueil, deux choix : **Se connecter** ou **Créer un compte**.
+Chaque personne a son propre compte et son propre portefeuille de 500 000 €. Pour un nouveau compte :
+1. choisissez un identifiant et un mot de passe (onglet « Créer un compte ») ;
+2. **notez ou téléchargez le code de récupération** affiché (il sert si vous oubliez le mot de passe) ;
 3. répondez aux 4 questions du profil de risque ;
 4. répartissez le capital (bouton « Proposer selon mon profil » ou saisie à la main).
 
@@ -55,7 +56,7 @@ Votre PC doit rester allumé avec l'application lancée.
 
 Attention : en ligne, la base de données **peut être effacée** quand l'application redémarre
 (mise en veille après environ 12 h sans visite, ou mise à jour du code).
-Téléchargez donc régulièrement la sauvegarde (*Historique et réglages → Données et sauvegarde*)
+Téléchargez donc régulièrement la sauvegarde (*Réglages → Sauvegarde*)
 et restaurez-la si besoin. Les téléchargements de cours depuis Yahoo Finance peuvent aussi être
 refusés depuis les serveurs en ligne : dans ce cas, importez les cours en CSV.
 
@@ -74,8 +75,9 @@ Les tests utilisent une base temporaire et des cours fictifs : ils ne touchent j
 | `ecrans.py` | Les écrans de l'interface | — |
 | `style.py` | Couleurs, logo, mise en page CAP 500 | — |
 | `profil.py` | Questionnaire du profil de risque | — |
+| `textes.py` | Textes en langage simple : guide, lexique, explications des conseils | — |
 | `config.py` | Paramètres : actions, capital, seuils, sécurité | — |
-| `base.py` | Base de données SQLite, réglages, sauvegardes | — |
+| `base.py` | Base de données SQLite (un portefeuille par compte), réglages, sauvegardes | — |
 | `donnees.py` | Cours (yfinance), comptes, analystes, actualités | Logigramme 4 |
 | `graphique.py` | Moyennes mobiles, RSI, MACD, Bollinger | A1 |
 | `infos.py` | Objectif des analystes et actualités | A2 |
@@ -83,11 +85,11 @@ Les tests utilisent une base temporaire et des cours fictifs : ils ne touchent j
 | `hasard.py` | Simulation Monte-Carlo | A4 |
 | `moteur.py` | Score, recommandation, phrase d'argumentation | A5, A6 |
 | `portefeuille.py` | Ordres, valeur, vente automatique à −10 %, répartition | A7, A8, logigramme 3 |
-| `auth.py` | Connexion, blocage après 5 essais, code de récupération | Logigramme 2 |
+| `auth.py` | Création de compte, connexion, blocage après 5 essais, mot de passe oublié | Logigramme 2 |
 | `affichage.py` | Format des montants et des dates en français | — |
 | `modele.py` | Structures de données communes | — |
 | `assets/` | Logo (remplacez par `assets/logo.png` pour utiliser le vôtre) | — |
-| `.streamlit/config.toml` | Thème de couleurs et accès réseau | — |
+| `.streamlit/config.toml` | Thème de couleurs | — |
 | `tests/` | Tests automatiques | — |
 
 ## 4 bis. Profils de risque
@@ -114,5 +116,6 @@ La perte maximale ne dépasse jamais 10 % (exigence du client). Les valeurs se m
 Les cours et les actualités sont téléchargés automatiquement. Sans internet, l'application utilise les derniers cours
 enregistrés ; on peut aussi importer un fichier CSV dans *Historique et réglages → Données*.
 
+Une base de l'ancienne version (un seul compte) est convertie automatiquement : le compte et son portefeuille sont conservés.
 La base de données (`data/portefeuille.db`) est créée automatiquement et sauvegardée chaque jour dans `data/sauvegardes/`
 (7 dernières copies).

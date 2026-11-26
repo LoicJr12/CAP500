@@ -1,5 +1,6 @@
 """
 Les écrans de l'interface Streamlit (voir le dossier de spécification, section 3).
+Les textes sont écrits pour être compris par une personne qui ne connaît pas la bourse.
 """
 import io
 import json
@@ -21,35 +22,23 @@ import moteur
 import portefeuille
 import profil
 import style
+import textes
 from affichage import date_fr, date_longue, euros, lire_nombre, nombre, pourcent, texte_nombre
-from style import COULEURS_CONSEIL, GRIS, MARINE, OR, ROUGE, VERT
+from style import COULEURS_CONSEIL, GRIS, MARINE, OR, ROUGE, VERT, icone
 
-PAGES = ["Tableau de bord", "Répartition de départ", "Fiche action", "Achat / vente", "Mon profil",
-         "Historique et réglages"]
+PAGES = ["Accueil", "Investir mon capital", "Les actions", "Acheter / vendre", "Mon profil", "Historique",
+         "Réglages", "Guide"]
 ICONES = {
-    "Tableau de bord": ":material/space_dashboard:",
-    "Répartition de départ": ":material/donut_large:",
-    "Fiche action": ":material/query_stats:",
-    "Achat / vente": ":material/swap_horiz:",
+    "Accueil": ":material/home:",
+    "Investir mon capital": ":material/rocket_launch:",
+    "Les actions": ":material/query_stats:",
+    "Acheter / vendre": ":material/swap_horiz:",
     "Mon profil": ":material/shield_person:",
-    "Historique et réglages": ":material/tune:",
+    "Historique": ":material/history:",
+    "Réglages": ":material/settings:",
+    "Guide": ":material/menu_book:",
 }
 COULEURS_TONALITE = {1: VERT, 0: "#B8C0CC", -1: ROUGE}
-AIDE = {
-    "graphique": "Moyennes mobiles, RSI, MACD et bandes de Bollinger. +2 = signaux d'achat, −2 = signaux de vente.",
-    "infos": "Écart entre l'objectif des analystes et le cours, et actualités positives ou négatives de la semaine.",
-    "financier": "5 ratios (croissance du CA, marge nette, PER, endettement, rendement) comparés aux 4 autres.",
-    "hasard": "10 000 scénarios simulés sur une semaine : probabilité de hausse et risque de perte.",
-}
-LIBELLES_REGLES = {
-    "seuil_achat": "Achat si score ≥",
-    "seuil_vente": "Vente si score ≤",
-    "max_par_action": "Part max. par action",
-    "reserve_min": "Liquidités min.",
-    "var_max": "Risque / semaine",
-    "seuil_alerte": "Alerte",
-    "seuil_vente_auto": "Vente automatique",
-}
 
 
 # =====================================================================
@@ -57,6 +46,10 @@ LIBELLES_REGLES = {
 # =====================================================================
 def html(texte: str, conteneur=None) -> None:
     (conteneur or st).markdown(texte, unsafe_allow_html=True)
+
+
+def uid() -> int:
+    return st.session_state["uid"]
 
 
 def flash(type_message: str, texte: str) -> None:
@@ -83,7 +76,14 @@ def deconnecter(message: str = None) -> None:
         st.session_state["message_connexion"] = message
 
 
-def choisir_action(conteneur=None, libelle: str = "Action") -> str:
+def pages_du_menu() -> list:
+    """« Investir mon capital » n'apparaît que tant que le capital n'est pas investi."""
+    if portefeuille.depart_fait(uid()):
+        return [p for p in PAGES if p != "Investir mon capital"]
+    return PAGES
+
+
+def choisir_action(conteneur=None, libelle: str = "Entreprise") -> str:
     codes = list(config.ACTIONS)
     if st.session_state.get("action_choisie") not in codes:
         st.session_state["action_choisie"] = codes[0]
@@ -91,16 +91,17 @@ def choisir_action(conteneur=None, libelle: str = "Action") -> str:
 
 
 def champ_nombre(libelle: str, cle: str, defaut=None, conteneur=None, entier: bool = False,
-                 aide: str = None, masquer_libelle: bool = False):
-    """Champ de saisie qui accepte la virgule et les espaces (« 12 500,50 »). Renvoie le nombre ou None."""
+                 aide: str = None, masquer_libelle: bool = False, exemple: str = None):
+    """Champ qui accepte la virgule et les espaces (« 12 500,50 »). Renvoie le nombre ou None."""
     conteneur = conteneur or st
     if cle not in st.session_state:
         st.session_state[cle] = "" if defaut is None else texte_nombre(defaut, 0 if entier else 2)
-    texte = conteneur.text_input(libelle, key=cle, help=aide, placeholder="ex. 150" if entier else "ex. 25 000,50",
+    texte = conteneur.text_input(libelle, key=cle, help=aide,
+                                 placeholder=exemple or ("ex. 150" if entier else "ex. 25 000"),
                                  label_visibility="collapsed" if masquer_libelle else "visible")
     valeur = lire_nombre(texte)
     if texte.strip() and valeur is None:
-        conteneur.caption(":red[Nombre non reconnu]")
+        conteneur.caption(":red[Écrivez un nombre, par exemple 25 000 ou 12,5]")
     return valeur
 
 
@@ -108,17 +109,28 @@ def variation(x, decimales: int = 1) -> str:
     return f"<span class='{style.classe_variation(x)}'>{pourcent(x, decimales, signe=True)}</span>"
 
 
+def question(numero: int, texte: str, conteneur=None) -> None:
+    html(f"<div class='hk-question'><span class='hk-etape-num'>{numero}</span>{texte}</div>", conteneur)
+
+
+def recap(lignes: list, total: tuple = None) -> str:
+    contenu = "".join(f"<div class='hk-recap'><span>{a}</span><b>{b}</b></div>" for a, b in lignes)
+    if total:
+        contenu += f"<div class='hk-recap total'><span>{total[0]}</span><span>{total[1]}</span></div>"
+    return contenu
+
+
 # =====================================================================
 # Données et calculs (logigramme 4), gardés en mémoire 1 heure
 # =====================================================================
-@st.cache_data(ttl=3600, show_spinner="Mise à jour des cours et des actualités…")
+@st.cache_data(ttl=3600, show_spinner="Mise à jour des prix et des actualités…")
 def actualiser_donnees(jour: str) -> dict:
     cours = donnees.mettre_a_jour_cours()
     actus = {code: donnees.telecharger_actualites(code) for code in config.ACTIONS}
     return {"cours": cours, "actus": actus, "heure": datetime.now().strftime("%d/%m/%Y à %H:%M")}
 
 
-@st.cache_data(ttl=3600, show_spinner="Calcul des recommandations…")
+@st.cache_data(ttl=3600, show_spinner="Calcul des conseils…")
 def calculer_analyses(reglages_json: str, jeton: str) -> dict:
     reglages = json.loads(reglages_json)
     cours = {code: donnees.lire_cours(code) for code in config.ACTIONS}
@@ -134,7 +146,7 @@ def calculer_analyses(reglages_json: str, jeton: str) -> dict:
 
 
 def analyses_courantes(statut: dict) -> dict:
-    reglages = base.lire_reglages()
+    reglages = base.lire_reglages(uid())
     cles = {k: reglages[k] for k in [*config.REGLAGES_DEFAUT, "var_max"]}
     return calculer_analyses(json.dumps(cles, sort_keys=True), statut["heure"])
 
@@ -145,111 +157,137 @@ def tout_recalculer() -> None:
 
 
 def afficher_etat_donnees(statut: dict) -> None:
-    """Message orange si les cours n'ont pas pu être mis à jour (logigramme 4)."""
+    """Message si les prix n'ont pas pu être mis à jour (logigramme 4)."""
     echecs = [code for code in config.ACTIONS if not statut["cours"].get(code)]
     if not echecs:
         return
     sans_donnees = [config.ACTIONS[c] for c in echecs if donnees.dernier_cours(c)[0] is None]
     if sans_donnees:
-        st.error("Aucun cours disponible pour : " + ", ".join(sans_donnees)
-                 + ". Vérifiez votre connexion internet ou importez un fichier CSV (Historique et réglages).")
+        st.error("Aucun prix disponible pour : " + ", ".join(sans_donnees)
+                 + ". Vérifiez la connexion internet, ou importez les prix dans Réglages → Données.")
     anciens = [c for c in echecs if donnees.dernier_cours(c)[0] is not None]
     if anciens:
         derniere = max(donnees.dernier_cours(c)[1] for c in anciens)
-        st.warning(f"Cours du {date_fr(derniere)} : mise à jour impossible pour le moment.")
+        st.warning(f"Les prix n'ont pas pu être mis à jour (connexion internet ?). "
+                   f"Les calculs utilisent les derniers prix connus, du {date_fr(derniere)}.")
 
 
 # =====================================================================
-# Écran 0 – Connexion
+# Connexion et création de compte
 # =====================================================================
 def ecran_connexion() -> None:
-    _, centre, _ = st.columns([1, 1.3, 1])
-    with centre:
-        html(f"<div style='text-align:center;margin:2.5rem 0 1.5rem'>{style.logo_html(largeur=270)}</div>")
+    gauche, _, droite = st.columns([1.15, 0.06, 1], vertical_alignment="center")
+    html(f"""<div class='hk-hero'>
+        {style.logo_html(clair=True, largeur=200)}
+        <div class='hk-hero-titre'>Investissez 500 000 €<br><span class='hk-or'>en toute simplicité.</span></div>
+        <p>CAP 500 vous conseille sur 5 grandes entreprises françaises et vous explique
+        chaque conseil avec des mots simples.</p>
+        <div class='hk-atout'><div class='hk-atout-icone'>{icone('conseil', 22, OR)}</div>
+          <div><b>Des conseils expliqués</b><br>Acheter, vendre ou attendre : on vous dit toujours pourquoi.</div></div>
+        <div class='hk-atout'><div class='hk-atout-icone'>{icone('bouclier', 22, OR)}</div>
+          <div><b>Une protection automatique</b><br>Si la perte atteint votre limite, tout est vendu pour vous protéger.</div></div>
+        <div class='hk-atout'><div class='hk-atout-icone'>{icone('courbe', 22, OR)}</div>
+          <div><b>Un suivi clair</b><br>Votre gain ou votre perte en un coup d'œil, comparé au CAC 40.</div></div>
+        <div class='hk-hero-pied'>Argent virtuel · vrais prix de la Bourse de Paris · Hermès, Air Liquide,
+        TotalEnergies, Dassault Systèmes, Capgemini</div>
+    </div>""", gauche)
+
+    with droite:
+        html("<div class='hk-acces-titre'>Bienvenue</div>"
+             "<div class='hk-soustitre' style='margin-bottom:1rem'>Connectez-vous, ou créez votre compte "
+             "en 1 minute.</div>")
         if "message_connexion" in st.session_state:
             st.info(st.session_state.pop("message_connexion"))
-
-        if "code_a_noter" in st.session_state:
-            afficher_code_recuperation()
-        elif not auth.compte_existe():
-            formulaire_creation()
-        else:
-            with st.container(border=True):
-                onglet_connexion, onglet_oubli = st.tabs(["Se connecter", "Mot de passe oublié · nouveau compte"])
-                with onglet_connexion:
-                    formulaire_connexion()
-                with onglet_oubli:
-                    formulaire_recreation()
-        html("<div class='hk-pied'>Gestion de portefeuille · Hermès, Air Liquide, TotalEnergies, "
-             "Dassault Systèmes, Capgemini</div>")
+        with st.container(border=True):
+            onglet_connexion, onglet_creation = st.tabs(["Se connecter", "Créer un compte"])
+            with onglet_connexion:
+                formulaire_connexion()
+                with st.expander("Mot de passe oublié ?"):
+                    formulaire_oubli()
+            with onglet_creation:
+                formulaire_creation()
 
 
-def formulaire_creation() -> None:
-    with st.container(border=True):
-        st.markdown("### Créer votre compte")
-        st.caption(f"Première utilisation : choisissez un identifiant et un mot de passe "
-                   f"({config.LONGUEUR_MIN_MDP} caractères minimum).")
-        with st.form("creation_compte", border=False):
-            identifiant = st.text_input("Identifiant")
-            mdp = st.text_input("Mot de passe", type="password")
-            confirmation = st.text_input("Confirmer le mot de passe", type="password")
-            if st.form_submit_button("Créer le compte", type="primary", width="stretch"):
-                ok, message = auth.creer_compte(identifiant, mdp, confirmation)
-                if ok:
-                    st.session_state["code_a_noter"] = auth.nouveau_code_recuperation()
-                    st.session_state["message_connexion"] = message
-                    st.rerun()
-                st.error(message)
-
-
-def afficher_code_recuperation() -> None:
-    with st.container(border=True):
-        st.markdown("### Votre code de récupération")
-        st.write("Notez-le et gardez-le en lieu sûr. Il vous permettra de recréer votre compte si vous oubliez "
-                 "votre mot de passe. **Il ne sera plus affiché.**")
-        html(f"<div class='hk-code'>{st.session_state['code_a_noter']}</div>")
-        st.write("")
-        st.button("J'ai noté mon code", type="primary", width="stretch",
-                  on_click=lambda: st.session_state.pop("code_a_noter", None))
+def ouvrir_session(numero: int, identifiant: str, code: str = None) -> None:
+    """Après connexion : on envoie la personne là où elle en est (profil, investissement ou accueil)."""
+    base.sauvegarder()
+    reglages = base.lire_reglages(numero)
+    if not reglages.get("profil_defini"):
+        page = "Mon profil"
+    elif not portefeuille.depart_fait(numero):
+        page = "Investir mon capital"
+    else:
+        page = "Accueil"
+    st.session_state.update(connecte=True, uid=numero, identifiant=auth.identifiant(numero),
+                            derniere_activite=time.time(), page=page)
+    if code:
+        st.session_state["code_a_noter"] = code
+    st.rerun()
 
 
 def formulaire_connexion() -> None:
     with st.form("connexion", border=False):
-        identifiant = st.text_input("Identifiant")
-        mdp = st.text_input("Mot de passe", type="password")
+        identifiant = st.text_input("Identifiant", placeholder="Votre identifiant", key="connexion_identifiant")
+        mdp = st.text_input("Mot de passe", type="password", placeholder="Votre mot de passe", key="connexion_mdp")
         if st.form_submit_button("Se connecter", type="primary", width="stretch"):
-            ok, message = auth.verifier(identifiant, mdp)
+            ok, message, numero = auth.verifier(identifiant, mdp)
             if ok:
-                base.sauvegarder()
-                if not base.lire_reglages().get("profil_defini"):
-                    page = "Mon profil"
-                elif not portefeuille.depart_fait():
-                    page = "Répartition de départ"
-                else:
-                    page = "Tableau de bord"
-                st.session_state.update(connecte=True, identifiant=identifiant.strip(),
-                                        derniere_activite=time.time(), page=page)
-                st.rerun()
+                ouvrir_session(numero, identifiant)
             st.error(message)
+    st.caption("Pas encore de compte ? Cliquez sur l'onglet « Créer un compte ».")
 
 
-def formulaire_recreation() -> None:
-    st.caption("Saisissez le code de récupération reçu à la création du compte, puis vos nouveaux identifiants. "
-               "Une copie de sécurité des données est faite avant.")
-    with st.form("recreation", border=False):
+def formulaire_creation() -> None:
+    with st.form("creation_compte", border=False):
+        identifiant = st.text_input("Choisissez un identifiant", placeholder="ex. lamine.d", key="creation_identifiant",
+                                    help="C'est le nom que vous taperez pour vous connecter (3 à 30 caractères).")
+        mdp = st.text_input("Choisissez un mot de passe", type="password", key="creation_mdp",
+                            placeholder=f"{config.LONGUEUR_MIN_MDP} caractères minimum")
+        confirmation = st.text_input("Retapez le mot de passe", type="password", key="creation_confirmation")
+        if st.form_submit_button("Créer mon compte", type="primary", width="stretch"):
+            ok, message, numero = auth.creer_compte(identifiant, mdp, confirmation)
+            if ok:
+                ouvrir_session(numero, identifiant, auth.nouveau_code_recuperation(numero))
+            st.error(message)
+    html(f"<div style='display:flex;gap:.5rem;align-items:center;color:{GRIS};font-size:.85rem'>"
+         f"{icone('cadenas', 16, GRIS)} Gratuit · aucune donnée bancaire · 500 000 € virtuels pour commencer</div>")
+
+
+def formulaire_oubli() -> None:
+    st.caption("Saisissez le code de récupération reçu à la création de votre compte. "
+               "Votre portefeuille est conservé.")
+    with st.form("oubli", border=False):
+        identifiant = st.text_input("Identifiant", key="oubli_identifiant")
         code = st.text_input("Code de récupération", placeholder="XXXX-XXXX-XXXX")
-        identifiant = st.text_input("Nouvel identifiant")
         mdp = st.text_input("Nouveau mot de passe", type="password")
-        confirmation = st.text_input("Confirmer le mot de passe", type="password")
-        choix = st.radio("Votre portefeuille", ["Le garder", "Repartir de 500 000 €"], horizontal=True)
-        if st.form_submit_button("Recréer le compte", type="primary", width="stretch"):
-            ok, message = auth.recreer_compte(code, identifiant, mdp, confirmation, choix == "Le garder")
+        confirmation = st.text_input("Retapez le nouveau mot de passe", type="password")
+        if st.form_submit_button("Changer mon mot de passe", width="stretch"):
+            ok, message, numero = auth.mot_de_passe_oublie(identifiant, code, mdp, confirmation)
             if ok:
-                tout_recalculer()
-                st.session_state["code_a_noter"] = auth.nouveau_code_recuperation()
-                st.session_state["message_connexion"] = message
-                st.rerun()
+                ouvrir_session(numero, identifiant, auth.nouveau_code_recuperation(numero))
             st.error(message)
+
+
+def ecran_code_recuperation() -> None:
+    """Affiché une seule fois, juste après la création du compte (ou un changement de mot de passe)."""
+    _, centre, _ = st.columns([1, 1.4, 1])
+    code = st.session_state["code_a_noter"]
+    with centre:
+        html(f"<div style='text-align:center;margin:2rem 0 1.2rem'>{style.logo_html(largeur=230)}</div>")
+        with st.container(border=True):
+            html(f"<div style='display:flex;gap:.6rem;align-items:center'>{style.rond('valide', VERT)}"
+                 f"<div class='hk-acces-titre' style='margin:0;font-size:1.4rem'>Votre compte est prêt</div></div>")
+            st.write("Voici votre **code de récupération**. Il sert à choisir un nouveau mot de passe si vous "
+                     "oubliez le vôtre. **Il ne sera plus jamais affiché** : notez-le ou téléchargez-le.")
+            html(f"<div class='hk-code'>{code}</div>")
+            st.write("")
+            st.download_button("Télécharger le code", icon=":material/download:", width="stretch",
+                               data=(f"{config.NOM_APPLI} – code de récupération\n"
+                                     f"Identifiant : {st.session_state['identifiant']}\nCode : {code}\n"),
+                               file_name="cap500_code_recuperation.txt", mime="text/plain")
+            note = st.checkbox("J'ai noté ou téléchargé mon code")
+            st.button("Commencer", type="primary", width="stretch", disabled=not note,
+                      on_click=lambda: st.session_state.pop("code_a_noter", None))
 
 
 # =====================================================================
@@ -257,228 +295,281 @@ def formulaire_recreation() -> None:
 # =====================================================================
 def barre_laterale(statut: dict) -> None:
     sb = st.sidebar
-    reglages = base.lire_reglages()
-    html(f"<div style='margin:.3rem 0 1.6rem'>{style.logo_html(clair=True, largeur=190)}</div>", sb)
-    html(f"<div style='margin-bottom:1.1rem;font-size:.88rem'>"
-         f"<div style='color:#9FB0C8;font-size:.75rem'>Connecté</div>"
-         f"<div style='color:#FFFFFF;font-weight:600;margin-bottom:.4rem'>"
-         f"{style.echapper(st.session_state.get('identifiant', ''))}</div>"
-         f"{style.pastille_profil(reglages['profil'])}</div>", sb)
-    sb.radio("Menu", PAGES, key="page", format_func=lambda p: f"{ICONES[p]} {p}", label_visibility="collapsed")
+    reglages = base.lire_reglages(uid())
+    nom = st.session_state.get("identifiant", "")
+    html(f"<div style='margin:.3rem 0 1.5rem'>{style.logo_html(clair=True, largeur=180)}</div>", sb)
+    html(f"<div style='display:flex;gap:.7rem;align-items:center;margin-bottom:1.2rem;padding:.7rem;"
+         f"background:rgba(255,255,255,.06);border-radius:12px'>"
+         f"<div class='hk-avatar'>{style.echapper(style.initiales(nom))}</div>"
+         f"<div style='min-width:0'><div style='color:#FFFFFF;font-weight:700;overflow:hidden;"
+         f"text-overflow:ellipsis'>{style.echapper(nom)}</div>"
+         f"<div style='margin-top:.2rem'>"
+         f"{style.pastille_profil(reglages['profil']) if reglages.get('profil_defini') else style.pastille('Profil à choisir', '#9FB0C8')}"
+         f"</div></div></div>", sb)
+    pages = pages_du_menu()
+    if st.session_state.get("page") not in pages:
+        st.session_state["page"] = "Accueil"
+    sb.radio("Menu", pages, key="page", format_func=lambda p: f"{ICONES[p]} {p}", label_visibility="collapsed")
     sb.divider()
-    sb.caption(f"Données du {statut['heure']}")
-    if sb.button("Actualiser les données", icon=":material/refresh:", width="stretch"):
+    sb.caption(f"Prix mis à jour le {statut['heure']}")
+    if sb.button("Actualiser les prix", icon=":material/refresh:", width="stretch"):
         tout_recalculer()
         st.rerun()
     if sb.button("Se déconnecter", icon=":material/logout:", width="stretch"):
         base.sauvegarder()
-        deconnecter("Vous êtes déconnecté.")
+        deconnecter("Vous êtes déconnecté. À bientôt !")
         st.rerun()
 
 
 # =====================================================================
-# Écran 1 – Tableau de bord
+# Accueil (tableau de bord)
 # =====================================================================
-def ecran_tableau_de_bord(analyses: dict, prix: dict) -> None:
-    reglages = base.lire_reglages()
-    etat = portefeuille.valeur(prix)
+def ecran_accueil(analyses: dict, prix: dict) -> None:
+    numero = uid()
+    reglages = base.lire_reglages(numero)
+    etat = portefeuille.valeur(numero, prix)
     gain = etat["valeur"] - config.CAPITAL
     cac = donnees.lire_cours(config.INDICE)
     cac_dernier = float(cac["cloture"].iloc[-1]) if not cac.empty else None
     cac_var = float(cac["cloture"].iloc[-1] / cac["cloture"].iloc[-2] - 1) if len(cac) > 1 else None
-    portefeuille.enregistrer_historique(etat["valeur"], etat["liquidites"], cac_dernier)
+    portefeuille.enregistrer_historique(numero, etat["valeur"], etat["liquidites"], cac_dernier)
+    pos = portefeuille.positions(numero)
+    conseils = {code: moteur.conseiller(a, code in pos, reglages)[0] for code, a in analyses.items()}
 
-    style.entete("Tableau de bord", f"Bonjour {st.session_state.get('identifiant', '')} · {date_longue(date.today())}",
-                 "Vue d'ensemble de votre portefeuille et de nos conseils du jour.")
+    style.entete(f"Bonjour {st.session_state.get('identifiant', '')}", date_longue(date.today()),
+                 "Voici où en est votre portefeuille aujourd'hui.")
+
+    if not portefeuille.depart_fait(numero):
+        with st.container(border=True):
+            c1, c2 = st.columns([3, 1.2], vertical_alignment="center")
+            c1.markdown("**Votre argent n'est pas encore investi.** Répartissez vos 500 000 € entre les 5 "
+                        "entreprises : CAP 500 peut vous proposer une répartition adaptée à votre profil.")
+            c2.button("Investir mon capital", type="primary", icon=":material/rocket_launch:", width="stretch",
+                      on_click=aller_a, args=("Investir mon capital",))
+
+    resume_du_jour(etat, gain, conseils, reglages)
 
     c = st.columns(4)
-    style.kpi(c[0], "Valeur du portefeuille", euros(etat["valeur"], 0),
-              f"{pourcent(etat['perte'], 2, signe=True)} depuis le départ", accent=True)
-    style.kpi(c[1], "Gain / perte", f"<span class='{style.classe_variation(gain)}'>{euros(gain, 0)}</span>",
-              f"sur {euros(config.CAPITAL, 0)} de capital")
+    style.kpi(c[0], "Valeur de mon portefeuille", euros(etat["valeur"], 0),
+              f"{pourcent(etat['perte'], 2, signe=True)} depuis le départ", accent=True,
+              explication="Vos actions au prix du jour + votre argent disponible.")
+    style.kpi(c[1], "Gain ou perte", f"<span class='{style.classe_variation(gain)}'>{euros(gain, 0)}</span>",
+              "par rapport aux 500 000 € de départ",
+              explication="Positif : vous avez gagné de l'argent. Négatif : vous en avez perdu.")
     part_liq = etat["liquidites"] / etat["valeur"] if etat["valeur"] else 0
-    style.kpi(c[2], "Liquidités", euros(etat["liquidites"], 0),
-              f"{pourcent(part_liq, 0)} du total · min. {pourcent(reglages['reserve_min'], 0)}")
-    style.kpi(c[3], config.NOM_INDICE, nombre(cac_dernier, 0), f"{variation(cac_var, 2)} aujourd'hui")
+    style.kpi(c[2], "Argent disponible", euros(etat["liquidites"], 0),
+              f"{pourcent(part_liq, 0)} du portefeuille, prêt à être investi",
+              explication="L'argent qui n'est pas placé en actions (on parle aussi de liquidités).")
+    style.kpi(c[3], "Marché français (CAC 40)", nombre(cac_dernier, 0), f"{variation(cac_var, 2)} aujourd'hui",
+              explication="L'indice des 40 plus grandes entreprises françaises : il sert de point de comparaison.")
     st.write("")
-    jauge_protection(etat["perte"], reglages)
-
-    if not portefeuille.depart_fait():
-        with st.container(border=True):
-            st.markdown("**Votre capital n'est pas encore investi.** Répartissez vos 500 000 € entre les 5 actions.")
-            st.button("Répartir mon capital", type="primary", on_click=aller_a, args=("Répartition de départ",))
 
     gauche, droite = st.columns([2.3, 1])
     with gauche, st.container(border=True):
-        st.markdown("### Vos actions")
-        tableau_actions(analyses, etat, reglages)
+        st.markdown("### Les 5 entreprises et nos conseils")
+        tableau_actions(analyses, etat, conseils, pos)
     with droite, st.container(border=True):
-        st.markdown("### Répartition")
-        graphique_repartition(prix, etat)
+        st.markdown("### Où est mon argent ?")
+        graphique_repartition(prix, etat, pos)
 
     with st.container(border=True):
-        st.markdown(f"### Évolution face au {config.NOM_INDICE}")
-        graphique_historique()
+        st.markdown("### Mon portefeuille comparé au marché")
+        graphique_historique(numero)
+        st.caption("Les deux courbes partent de 100. Au-dessus de 100, la valeur a augmenté ; en dessous, "
+                   "elle a baissé. Si votre courbe est au-dessus de celle du CAC 40, vous faites mieux que le marché.")
 
 
-def jauge_protection(perte: float, reglages: dict) -> None:
-    """Barre qui montre où en est la perte par rapport à la vente automatique (A8)."""
+def resume_du_jour(etat: dict, gain: float, conseils: dict, reglages: dict) -> None:
+    """Trois phrases simples : combien je vaux, que faire, suis-je protégé."""
+    if gain > 0.5:
+        evolution = f"<b class='hk-hausse'>{euros(gain, 0)} de plus</b> qu'au départ"
+    elif gain < -0.5:
+        evolution = f"<b class='hk-baisse'>{euros(-gain, 0)} de moins</b> qu'au départ"
+    else:
+        evolution = "autant qu'au départ"
+    ligne1 = (f"Votre portefeuille vaut <b>{euros(etat['valeur'], 0)}</b>, soit {evolution} "
+              f"({pourcent(etat['perte'], 2, signe=True)}).")
+
+    a_acheter = [config.ACTIONS[c] for c, v in conseils.items() if v == "Acheter"]
+    a_vendre = [config.ACTIONS[c] for c, v in conseils.items() if v == "Vendre"]
+    if not a_acheter and not a_vendre:
+        ligne2 = "Aucun achat ni aucune vente conseillés aujourd'hui : le plus sage est d'attendre."
+    else:
+        morceaux = []
+        if a_acheter:
+            morceaux.append(f"<b class='hk-hausse'>à acheter</b> : {', '.join(a_acheter)}")
+        if a_vendre:
+            morceaux.append(f"<b class='hk-baisse'>à vendre</b> : {', '.join(a_vendre)}")
+        ligne2 = "Nos conseils du jour, " + " · ".join(morceaux) + ". Pour les autres, mieux vaut attendre."
+
     limite = -reglages["seuil_vente_auto"]
-    alerte = -reglages["seuil_alerte"]
-    remplissage = min(max(-perte, 0) / limite, 1) * 100
-    couleur = ROUGE if -perte >= alerte else OR if perte < 0 else VERT
-    texte = "aucune perte" if perte >= 0 else f"perte de {pourcent(-perte, 1)}"
-    html(f"""<div class='hk-kpi' style='padding:.8rem 1.1rem;margin-bottom:1rem'>
-      <div style='display:flex;justify-content:space-between;font-size:.85rem'>
-        <span style='font-weight:700;color:{MARINE}'>Protection contre les pertes</span>
-        <span style='color:{GRIS}'>Aujourd'hui : <b style='color:{couleur}'>{texte}</b> · alerte à
-        −{pourcent(alerte, 0)} · vente automatique à −{pourcent(limite, 0)}</span></div>
-      <div class='hk-jauge' style='height:8px;margin-top:.6rem'>
-        <div class='hk-jauge-barre' style='left:0;height:8px;width:{remplissage:.1f}%;background:{couleur}'></div>
-        <div style='position:absolute;left:{alerte / limite * 100:.1f}%;top:-3px;width:2px;height:14px;
-        background:{OR}'></div></div></div>""")
+    if portefeuille.limite_atteinte(uid()):
+        ligne3, couleur3, icone3 = ("Limite de perte atteinte : vos actions ont été vendues et les achats sont "
+                                    "bloqués. Vous pouvez repartir de zéro dans Réglages."), ROUGE, "alerte"
+    elif etat["perte"] <= reglages["seuil_alerte"]:
+        ligne3, couleur3, icone3 = (f"Attention : votre perte approche de la limite de {pourcent(limite, 0)}. "
+                                    "Au-delà, toutes vos actions seront vendues automatiquement."), style.ORANGE, "alerte"
+    else:
+        ligne3, couleur3, icone3 = (f"Protection active : si la perte atteint {pourcent(limite, 0)}, "
+                                    "tout sera vendu automatiquement. Vous en êtes loin."), VERT, "bouclier"
+
+    html(f"""<div class='hk-resume'><div class='hk-resume-titre'>En résumé</div>
+      <div class='hk-resume-ligne'>{style.rond('portefeuille', MARINE)}<div>{ligne1}</div></div>
+      <div class='hk-resume-ligne'>{style.rond('conseil', OR)}<div>{ligne2}</div></div>
+      <div class='hk-resume-ligne'>{style.rond(icone3, couleur3)}<div>{ligne3}</div></div>
+    </div>""")
 
 
-def tableau_actions(analyses: dict, etat: dict, reglages: dict) -> None:
-    pos = portefeuille.positions()
-    largeurs = [2.2, 1.2, 0.9, 1.4, 0.8, 1.4, 0.7]
-    entetes = st.columns(largeurs)
-    for colonne, titre in zip(entetes, ["Action", "Cours", "Jour", "Conseil", "Titres", "Valeur", ""]):
-        html(f"<span class='hk-entete-tableau'>{titre}</span>", colonne)
+def tableau_actions(analyses: dict, etat: dict, conseils: dict, pos: dict) -> None:
+    largeurs = [2.6, 1.2, 1, 1.2, 0.9, 1.3, 0.9]
+    entetes = [("Entreprise", ""), ("Prix", "Prix d'une action aujourd'hui"),
+               ("Jour", "Évolution du prix depuis hier"), ("Conseil", "Notre conseil du jour"),
+               ("J'en ai", "Nombre d'actions que vous possédez"), ("Valeur", "Ce que valent vos actions"), ("", "")]
+    for colonne, (titre, bulle) in zip(st.columns(largeurs), entetes):
+        html(f"<span class='hk-entete-tableau' title='{style.echapper(bulle)}'>{titre}</span>", colonne)
     for code, nom in config.ACTIONS.items():
         cols = st.columns(largeurs, vertical_alignment="center")
-        html(f"<div class='hk-ligne'><b>{nom}</b><br><small>{code.replace('.PA', '')} · Euronext Paris</small></div>",
-             cols[0])
+        html(f"<div class='hk-ligne'><b>{nom}</b><br><small>{textes.SECTEURS[code]}</small></div>", cols[0])
         analyse = analyses.get(code)
         if analyse is None:
-            cols[1].caption("Cours indisponible")
+            cols[1].caption("Prix indisponible")
             continue
         quantite = pos.get(code, {}).get("quantite", 0)
-        conseil, _ = moteur.conseiller(analyse, quantite > 0, reglages)
         valeur_ligne = quantite * analyse.cours
         html(f"<span class='hk-ligne'>{euros(analyse.cours)}</span>", cols[1])
         html(variation(analyse.variation_jour), cols[2])
-        html(style.pastille_conseil(conseil), cols[3])
+        html(style.pastille_conseil(conseils[code]), cols[3])
         html(f"<span class='hk-ligne'>{nombre(quantite, 0)}</span>", cols[4])
-        part = f"<br><small>{pourcent(valeur_ligne / etat['valeur'], 0)}</small>" if quantite else ""
+        part = f"<br><small>{pourcent(valeur_ligne / etat['valeur'], 0)} du total</small>" if quantite else ""
         html(f"<div class='hk-ligne'>{euros(valeur_ligne, 0)}{part}</div>", cols[5])
-        cols[6].button("", icon=":material/chevron_right:", key=f"voir_{code}", help=f"Voir {nom}",
-                       on_click=aller_a, args=("Fiche action", code))
+        cols[6].button("Voir", key=f"voir_{code}", help=f"Pourquoi ce conseil pour {nom} ?",
+                       on_click=aller_a, args=("Les actions", code), width="stretch")
 
 
-def graphique_repartition(prix: dict, etat: dict) -> None:
-    pos = portefeuille.positions()
-    noms = [config.ACTIONS[c] for c in pos] + ["Liquidités"]
+def graphique_repartition(prix: dict, etat: dict, pos: dict) -> None:
+    noms = [config.ACTIONS[c] for c in pos] + ["Argent disponible"]
     valeurs = [p["quantite"] * prix.get(c, p["prix_revient"]) for c, p in pos.items()] + [etat["liquidites"]]
     couleurs = [MARINE, style.MARINE_CLAIR, OR, "#7C8DB5", "#2E86AB"][:len(pos)] + ["#D5DBE5"]
-    fig = go.Figure(go.Pie(labels=noms, values=valeurs, hole=0.62, sort=False, marker=dict(colors=couleurs),
+    fig = go.Figure(go.Pie(labels=noms, values=valeurs, hole=0.64, sort=False, marker=dict(colors=couleurs),
                            textinfo="none", hovertemplate="%{label}<br>%{value:,.0f} €<br>%{percent}<extra></extra>"))
-    fig.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0), showlegend=True,
+    investi = etat["titres"] / etat["valeur"] if etat["valeur"] else 0
+    fig.update_layout(height=290, margin=dict(l=0, r=0, t=0, b=0), showlegend=True,
                       legend=dict(orientation="h", y=-0.05, font=dict(size=11)),
-                      annotations=[dict(text=f"<b>{len(pos)}</b><br>action{'s' if len(pos) > 1 else ''}",
-                                        showarrow=False, font=dict(size=15, color=MARINE))],
-                      separators=", ")
+                      annotations=[dict(text=f"<b>{pourcent(investi, 0)}</b><br>investi", showarrow=False,
+                                        font=dict(size=15, color=MARINE))])
     st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
-def graphique_historique() -> None:
-    hist = portefeuille.lire_historique()
+def graphique_historique(numero: int) -> None:
+    hist = portefeuille.lire_historique(numero)
     if len(hist) < 2:
-        st.caption("La courbe apparaîtra après quelques jours d'utilisation (un point par jour).")
+        st.caption("La courbe apparaîtra au bout de quelques jours : un point est ajouté chaque jour où vous "
+                   "ouvrez CAP 500.")
         return
     courbe = hist["valeur"] / hist["valeur"].iloc[0] * 100
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=hist["date"], y=courbe,
-                             name="Mon portefeuille", line=dict(width=3, color=MARINE),
+    fig.add_trace(go.Scatter(x=hist["date"], y=courbe, name="Mon portefeuille", line=dict(width=3, color=MARINE),
                              fill="tozeroy", fillcolor="rgba(11,37,69,0.06)"))
     cac = hist.dropna(subset=["cac40"])
     minimum = courbe.min()
     if len(cac) >= 2:
         courbe_cac = cac["cac40"] / cac["cac40"].iloc[0] * 100
         minimum = min(minimum, courbe_cac.min())
-        fig.add_trace(go.Scatter(x=cac["date"], y=courbe_cac,
-                                 name=config.NOM_INDICE, line=dict(dash="dot", color=OR, width=2)))
-    fig.update_layout(height=300, yaxis_title="Base 100", margin=dict(l=10, r=10, t=10, b=10),
-                      legend=dict(orientation="h", y=1.12), yaxis_range=[minimum - 1, None], separators=", ")
+        fig.add_trace(go.Scatter(x=cac["date"], y=courbe_cac, name="CAC 40", line=dict(dash="dot", color=OR, width=2)))
+    fig.add_hline(y=100, line_color="#B8C0CC", line_width=1)
+    fig.update_layout(height=300, margin=dict(l=10, r=10, t=10, b=10), legend=dict(orientation="h", y=1.12),
+                      yaxis_range=[minimum - 1, None])
     st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
 
 
 # =====================================================================
-# Écran 2 – Répartition de départ (logigramme 3)
+# Investir mon capital (répartition de départ, logigramme 3)
 # =====================================================================
 def ecran_repartition(prix: dict, analyses: dict) -> None:
-    style.entete("Répartition de départ", "Investir le capital",
-                 "Indiquez le montant à placer sur chaque action. Ce qui n'est pas investi reste en liquidités.")
-    if portefeuille.depart_fait():
-        st.info("La répartition de départ est déjà faite. Utilisez l'écran Achat / vente pour modifier votre portefeuille.")
+    numero = uid()
+    style.entete("Investir mes 500 000 €", "Étape 2 sur 3",
+                 "Choisissez combien placer sur chaque entreprise. Vous n'êtes pas obligé de tout investir : "
+                 "ce qui reste est gardé de côté.")
+    if portefeuille.depart_fait(numero):
+        st.info("Votre capital est déjà investi. Pour modifier votre portefeuille, utilisez « Acheter / vendre ».")
         return
+    html(etapes_demarrage(2))
 
-    r = base.lire_reglages()
+    r = base.lire_reglages(numero)
     taux = r["taux_frais"]
     plafond = r["max_par_action"] * config.CAPITAL
     reserve = r["reserve_min"] * config.CAPITAL
     with st.container(border=True):
-        c1, c2 = st.columns([3, 1.3], vertical_alignment="center")
-        html(f"{style.pastille_profil(r['profil'])} &nbsp; au plus <b>{euros(plafond, 0)}</b> par action "
-             f"({pourcent(r['max_par_action'], 0)}) · au moins <b>{euros(reserve, 0)}</b> en liquidités "
-             f"({pourcent(r['reserve_min'], 0)})", c1)
-        c2.button("Proposer selon mon profil", icon=":material/auto_awesome_motion:", width="stretch",
-                  on_click=proposer_repartition, args=({c: a.score for c, a in analyses.items()},),
-                  help="Répartition calculée à partir des scores et des limites de votre profil. Modifiable.")
+        c1, c2 = st.columns([2.6, 1.4], vertical_alignment="center")
+        html(f"<div style='display:flex;gap:.8rem;align-items:center'>{style.rond('conseil', OR)}<div>"
+             f"<b>Vous ne savez pas comment répartir ?</b><br><span style='color:{GRIS};font-size:.92rem'>"
+             f"CAP 500 propose une répartition selon nos conseils et votre profil {r['profil']}. "
+             f"Vous pourrez la modifier avant de valider.</span></div></div>", c1)
+        c2.button("Proposer une répartition", type="primary", icon=":material/auto_awesome:", width="stretch",
+                  on_click=proposer_repartition, args=({c: a.score for c, a in analyses.items()},))
 
     montants, erreurs = {}, []
     with st.container(border=True):
-        largeurs = [2.3, 1.1, 1.9, 1, 1]
-        for colonne, titre in zip(st.columns(largeurs), ["Action", "Cours", "Montant (€)", "Titres", "Part"]):
+        st.markdown("### Combien sur chaque entreprise ?")
+        st.caption(f"Votre profil {r['profil']} : au plus {euros(plafond, 0)} sur une même entreprise, "
+                   f"et au moins {euros(reserve, 0)} gardés de côté.")
+        largeurs = [2.5, 1.1, 2, 1.1, 0.9]
+        for colonne, titre in zip(st.columns(largeurs), ["Entreprise", "Prix d'une action", "Montant à investir (€)",
+                                                         "Nombre d'actions", "Part"]):
             html(f"<span class='hk-entete-tableau'>{titre}</span>", colonne)
         for code, nom in config.ACTIONS.items():
             cols = st.columns(largeurs, vertical_alignment="center")
             analyse = analyses.get(code)
             conseil = moteur.recommander(analyse.score, False, r) if analyse else None
-            html(f"<div class='hk-ligne'><b>{nom}</b>&nbsp; {style.pastille_conseil(conseil) if conseil else ''}</div>",
-                 cols[0])
+            html(f"<div class='hk-ligne'><b>{nom}</b> {style.pastille_conseil(conseil) if conseil else ''}"
+                 f"<br><small>{textes.SECTEURS[code]}</small></div>", cols[0])
             html(f"<span class='hk-ligne'>{euros(prix.get(code))}</span>", cols[1])
-            montant = champ_nombre(f"Montant {nom}", f"montant_{code}", conteneur=cols[2], masquer_libelle=True)
+            montant = champ_nombre(f"Montant {nom}", f"montant_{code}", conteneur=cols[2], masquer_libelle=True,
+                                   exemple="0")
             montants[code] = montant or 0.0
             if montants[code] > plafond + 0.01:
-                erreurs.append(f"{nom} : {euros(montants[code], 0)} dépasse le maximum de {euros(plafond, 0)}.")
-            html(f"<span class='hk-ligne'>{nombre(portefeuille.quantite_possible(montants[code], prix.get(code), taux), 0)}"
-                 f"</span>", cols[3])
+                erreurs.append(f"{nom} : {euros(montants[code], 0)}, c'est plus que le maximum de "
+                               f"{euros(plafond, 0)} prévu par votre profil.")
+            nb = portefeuille.quantite_possible(montants[code], prix.get(code), taux)
+            html(f"<span class='hk-ligne'>{nombre(nb, 0)}</span>", cols[3])
             html(f"<span class='hk-ligne'>{pourcent(montants[code] / config.CAPITAL, 0)}</span>", cols[4])
 
     total = sum(montants.values())
+    reste = config.CAPITAL - total
     c = st.columns(3)
-    style.kpi(c[0], "Total investi", euros(total, 0), f"{pourcent(total / config.CAPITAL, 0)} du capital", accent=True)
-    style.kpi(c[1], "Reste en liquidités", euros(config.CAPITAL - total, 0), f"minimum {euros(reserve, 0)}")
-    style.kpi(c[2], "Frais estimés", euros(total * taux, 0), f"{pourcent(taux, 2)} par ordre")
+    style.kpi(c[0], "Je vais investir", euros(total, 0), f"{pourcent(total / config.CAPITAL, 0)} de mes 500 000 €",
+              accent=True)
+    style.kpi(c[1], "Je garde de côté", euros(reste, 0), f"minimum demandé : {euros(reserve, 0)}",
+              explication="Argent non investi, disponible plus tard pour acheter.")
+    style.kpi(c[2], "Frais estimés", euros(total * taux, 0), f"{pourcent(taux, 2)} du montant acheté",
+              explication="Ce que prend l'intermédiaire à chaque achat.")
     st.write("")
 
     if total > config.CAPITAL:
-        erreurs.append(f"Le total dépasse votre capital de {euros(total - config.CAPITAL)}.")
-    elif config.CAPITAL - total < reserve - 0.01:
-        erreurs.append(f"Gardez au moins {euros(reserve, 0)} en liquidités (profil {r['profil']}).")
+        erreurs.append(f"Le total dépasse vos 500 000 € de {euros(total - config.CAPITAL)}.")
+    elif reste < reserve - 0.01:
+        erreurs.append(f"Gardez au moins {euros(reserve, 0)} de côté (profil {r['profil']}).")
     for erreur in erreurs:
         st.error(erreur)
     if erreurs or total <= 0:
         if total <= 0:
-            st.caption("Saisissez au moins un montant, ou cliquez sur « Proposer selon mon profil ».")
+            st.caption("Saisissez au moins un montant, ou cliquez sur « Proposer une répartition ».")
         return
 
     if not st.session_state.get("repartition_en_attente"):
-        st.button("Valider la répartition", type="primary",
+        st.button("Valider ma répartition", type="primary", icon=":material/check:",
                   on_click=lambda: st.session_state.update(repartition_en_attente=True))
     else:
-        st.warning(f"Confirmez-vous l'investissement de {euros(total)} ? "
-                   "Les titres seront achetés au dernier cours connu.")
+        st.warning(f"Vous allez investir {euros(total)} au prix du jour. On confirme ?")
         c1, c2, _ = st.columns([1, 1, 2])
-        c1.button("Confirmer", type="primary", icon=":material/check:", on_click=confirmer_repartition,
+        c1.button("Oui, investir", type="primary", icon=":material/check:", on_click=confirmer_repartition,
                   width="stretch")
         c2.button("Modifier", icon=":material/edit:", width="stretch",
                   on_click=lambda: st.session_state.pop("repartition_en_attente", None))
 
 
 def proposer_repartition(scores: dict) -> None:
-    proposition = portefeuille.repartition_conseillee(scores, base.lire_reglages())
+    proposition = portefeuille.repartition_conseillee(scores, base.lire_reglages(uid()))
     for code in config.ACTIONS:
         montant = proposition.get(code, 0)
         st.session_state[f"montant_{code}"] = texte_nombre(montant, 0) if montant else ""
@@ -488,71 +579,84 @@ def proposer_repartition(scores: dict) -> None:
 def confirmer_repartition() -> None:
     st.session_state.pop("repartition_en_attente", None)
     montants = {code: lire_nombre(st.session_state.get(f"montant_{code}", "")) or 0.0 for code in config.ACTIONS}
-    ok, message = portefeuille.repartir(montants, donnees.cours_actuels(), base.lire_reglages()["taux_frais"])
+    ok, message = portefeuille.repartir(uid(), montants, donnees.cours_actuels(),
+                                        base.lire_reglages(uid())["taux_frais"])
     flash("success" if ok else "error", message)
     if ok:
-        aller_a("Tableau de bord")
+        aller_a("Accueil")
+
+
+def etapes_demarrage(actuelle: int) -> str:
+    return style.etapes(actuelle, textes.ETAPES)
 
 
 # =====================================================================
-# Écran 3 – Fiche action
+# Les actions (fiche d'une entreprise)
 # =====================================================================
 def ecran_fiche_action(analyses: dict) -> None:
+    numero = uid()
     haut_gauche, haut_droite = st.columns([3, 1.2], vertical_alignment="bottom")
-    code = choisir_action(haut_droite)
+    code = choisir_action(haut_droite, "Changer d'entreprise")
     analyse = analyses.get(code)
     with haut_gauche:
-        style.entete(config.ACTIONS[code], "Fiche action",
-                     f"{code.replace('.PA', '')} · Euronext Paris"
-                     + (f" · dernier cours le {date_fr(analyse.date_cours)}" if analyse else ""))
+        style.entete(config.ACTIONS[code], "Les actions", textes.SECTEURS[code])
     if analyse is None:
-        st.error("Cours indisponibles pour cette action.")
+        st.error("Les prix de cette entreprise ne sont pas disponibles pour le moment.")
         return
 
-    reglages = base.lire_reglages()
-    position = portefeuille.positions().get(code)
+    reglages = base.lire_reglages(numero)
+    position = portefeuille.positions(numero).get(code)
     conseil, phrase = moteur.conseiller(analyse, position is not None, reglages)
+    couleur = COULEURS_CONSEIL[conseil]
+
+    html(f"<div class='hk-conseil' style='border-left-color:{couleur}'>"
+         f"<div class='hk-conseil-titre' style='color:{GRIS}'>Notre conseil aujourd'hui</div>"
+         f"<div class='hk-conseil-grand' style='color:{couleur}'>{style.LIBELLES_CONSEIL[conseil]}</div>"
+         f"<div class='hk-conseil-texte'>{style.echapper(phrase)}</div>"
+         f"<div class='hk-conseil-sens'>{textes.SENS_CONSEIL[conseil]}</div></div>")
 
     c = st.columns(4)
-    style.kpi(c[0], "Cours", euros(analyse.cours), f"{variation(analyse.variation_jour, 2)} sur la journée",
-              accent=True)
-    style.kpi(c[1], "Potentiel selon les analystes",
-              variation(analyse.potentiel) if analyse.potentiel is not None else "—",
-              "écart avec l'objectif de cours")
-    style.kpi(c[2], "Dans votre portefeuille",
-              f"{nombre(position['quantite'], 0)} titres" if position else "Aucun titre",
-              f"prix de revient {euros(position['prix_revient'])}" if position else "&nbsp;")
-    style.kpi(c[3], "Score global", nombre(analyse.score, 2),
-              f"achat dès {nombre(reglages['seuil_achat'], 1)} · vente dès {nombre(reglages['seuil_vente'], 1)}")
+    style.kpi(c[0], "Prix d'une action", euros(analyse.cours), f"{variation(analyse.variation_jour, 2)} depuis hier",
+              accent=True, explication=f"Dernier prix connu, le {date_fr(analyse.date_cours)}.")
+    style.kpi(c[1], "Avis des experts",
+              variation(analyse.potentiel) if analyse.potentiel is not None else "Pas d'avis",
+              "de hausse attendue" if (analyse.potentiel or 0) > 0 else
+              "de baisse attendue" if analyse.potentiel is not None else "aucun objectif récent",
+              explication="Écart entre le prix visé par les experts des banques et le prix actuel.")
+    style.kpi(c[2], "J'en possède",
+              f"{nombre(position['quantite'], 0)} action{'s' if position['quantite'] > 1 else ''}" if position
+              else "Aucune",
+              f"valeur : {euros(position['quantite'] * analyse.cours, 0)}" if position else "&nbsp;")
+    style.kpi(c[3], "Note globale", f"<span style='color:{style.couleur_note(analyse.score)}'>"
+              f"{textes.verdict(analyse.score)}</span>",
+              f"{nombre(analyse.score, 2)} sur une échelle de −2 à +2",
+              explication=f"Moyenne des 4 points étudiés. Achat conseillé à partir de "
+                          f"{nombre(reglages['seuil_achat'], 1)} pour votre profil {reglages['profil']}.")
     st.write("")
 
-    couleur = COULEURS_CONSEIL[conseil]
-    html(f"<div class='hk-conseil' style='border-left-color:{couleur}'>"
-         f"<div class='hk-conseil-titre' style='color:{couleur}'>Notre conseil · {conseil}</div>"
-         f"<div class='hk-conseil-texte'>{style.echapper(phrase)}</div></div>")
+    st.markdown("### Les 4 points étudiés")
+    for colonne, cle in zip(st.columns(4), ["graphique", "infos", "financier", "hasard"]):
+        titre, technique, question_ = textes.OUTILS[cle]
+        note = analyse.notes[cle]
+        html(f"<div class='hk-note'><div class='hk-note-tech'>{technique}</div>"
+             f"<div class='hk-note-nom'>{titre}</div>"
+             f"<div class='hk-note-verdict' style='color:{style.couleur_note(note)}'>{textes.verdict(note)}</div>"
+             f"{style.jauge(note)}<div class='hk-note-question'>{question_}</div></div>", colonne)
+    st.write("")
 
-    notes = st.columns(4)
-    for colonne, (cle, nom) in zip(notes, [("graphique", "Analyse graphique"), ("infos", "Informations"),
-                                           ("financier", "Analyse financière"), ("hasard", "Prise en compte du hasard")]):
-        html(style.jauge_note(nom, analyse.notes[cle], AIDE[cle]), colonne)
-    st.caption(f"Notes de −2 à +2. Recommandations indicatives, calculées selon votre profil {reglages['profil']} : "
-               "elles ne garantissent pas de gain.")
-
-    with st.container(border=True):
-        titre, choix = st.columns([3, 1.2], vertical_alignment="center")
-        titre.markdown("### Évolution du cours")
-        periode = choix.segmented_control("Période", ["1 mois", "6 mois", "1 an"], default="1 an",
-                                          key="periode_fiche", label_visibility="collapsed") or "1 an"
-        jours = {"1 mois": 21, "6 mois": 126, "1 an": 252}[periode]
-        ind = graphique.indicateurs(donnees.lire_cours(code))
-        afficher_graphique(ind.tail(jours))
-
-    st.button(f"Acheter ou vendre {config.ACTIONS[code]}", type="primary", icon=":material/swap_horiz:",
-              on_click=aller_a, args=("Achat / vente", code))
-
-    gauche, droite = st.columns([1.2, 1])
+    gauche, droite = st.columns([1.15, 1])
     with gauche, st.container(border=True):
-        st.markdown("### Dernières actualités")
+        st.markdown("### Pourquoi ce conseil ?")
+        if not analyse.arguments:
+            st.caption("Aucun signal marqué pour le moment.")
+        for a in sorted(analyse.arguments, key=lambda a: -abs(a.valeur)):
+            sens = "haut" if a.valeur > 0 else "bas"
+            teinte = VERT if a.valeur > 0 else ROUGE
+            texte = a.texte[0].upper() + a.texte[1:]
+            html(f"<div class='hk-argument'>{style.rond(sens, teinte)}<div>{style.echapper(texte)}"
+                 f"<small>{textes.expliquer(a.texte)}</small></div></div>")
+    with droite, st.container(border=True):
+        st.markdown("### Actualités récentes")
         actualites = donnees.lire_actualites(code, 6)
         if not actualites:
             st.caption("Aucune actualité disponible pour le moment.")
@@ -561,34 +665,61 @@ def ecran_fiche_action(analyses: dict) -> None:
             html(f"<div class='hk-actu'>{style.point(COULEURS_TONALITE[a['tonalite']])}"
                  f"<a href='{style.echapper(a['lien'])}' target='_blank'>{style.echapper(a['titre'])}</a>"
                  f"<br><small>{date_fr(a['date'])}{source}</small></div>")
-    with droite, st.container(border=True):
-        st.markdown("### Détail des calculs")
+        st.caption("Point vert : nouvelle plutôt bonne · rouge : plutôt mauvaise · gris : neutre.")
+
+    with st.container(border=True):
+        titre, choix = st.columns([3, 1.3], vertical_alignment="center")
+        titre.markdown("### Évolution du prix")
+        periode = choix.segmented_control("Période", ["1 mois", "6 mois", "1 an"], default="6 mois",
+                                          key="periode_fiche", label_visibility="collapsed") or "6 mois"
+        jours = {"1 mois": 21, "6 mois": 126, "1 an": 252}[periode]
+        ind = graphique.indicateurs(donnees.lire_cours(code)).tail(jours)
+        simple, technique = st.tabs(["Prix", "Indicateurs techniques (pour les connaisseurs)"])
+        with simple:
+            graphique_prix_simple(ind)
+            st.caption("La ligne bleue est le prix. Les lignes dorée et grise sont les moyennes des 20 et 50 "
+                       "derniers jours : quand le prix passe au-dessus, la tendance est plutôt à la hausse.")
+        with technique:
+            graphique_technique(ind)
+
+    st.button(f"Acheter ou vendre {config.ACTIONS[code]}", type="primary", icon=":material/swap_horiz:",
+              on_click=aller_a, args=("Acheter / vendre", code))
+
+    with st.expander("Pour aller plus loin : le détail des calculs"):
         afficher_detail(analyse, reglages)
 
 
-def afficher_graphique(df: pd.DataFrame) -> None:
+def graphique_prix_simple(df: pd.DataFrame) -> None:
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df.index, y=df["cloture"], name="Prix", line=dict(width=2.8, color=MARINE),
+                             fill="tozeroy", fillcolor="rgba(11,37,69,0.05)"))
+    fig.add_trace(go.Scatter(x=df.index, y=df["MM20"], name="Moyenne 20 jours", line=dict(width=1.6, color=OR)))
+    fig.add_trace(go.Scatter(x=df.index, y=df["MM50"], name="Moyenne 50 jours",
+                             line=dict(width=1.6, color="#9AA3B2", dash="dash")))
+    bas, haut = df["cloture"].min(), df["cloture"].max()
+    fig.update_layout(height=380, margin=dict(l=10, r=10, t=10, b=10), hovermode="x unified",
+                      legend=dict(orientation="h", y=1.1), yaxis_range=[bas * 0.97, haut * 1.03],
+                      yaxis_ticksuffix=" €")
+    st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+
+
+def graphique_technique(df: pd.DataFrame) -> None:
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[0.6, 0.2, 0.2], vertical_spacing=0.06,
                         subplot_titles=("", "RSI (14 jours)", "MACD"))
     fig.add_trace(go.Scatter(x=df.index, y=df["BB_haut"], line=dict(width=0), showlegend=False,
                              hoverinfo="skip"), row=1, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df["BB_bas"], line=dict(width=0), fill="tonexty",
                              fillcolor="rgba(29,78,137,0.08)", name="Bandes de Bollinger"), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df["cloture"], name="Cours", line=dict(width=2.6, color=MARINE)),
+    fig.add_trace(go.Scatter(x=df.index, y=df["cloture"], name="Prix", line=dict(width=2.4, color=MARINE)),
                   row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df["MM20"], name="Moyenne 20 j", line=dict(width=1.6, color=OR)),
-                  row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df["MM50"], name="Moyenne 50 j",
-                             line=dict(width=1.6, color="#7C8DB5", dash="dash")), row=1, col=1)
     dernier = df.iloc[-1]
     if pd.notna(dernier["support"]):
         fig.add_hline(y=dernier["support"], line_dash="dot", line_color=VERT, annotation_text="Support",
                       annotation_font_color=VERT, row=1, col=1)
         fig.add_hline(y=dernier["resistance"], line_dash="dot", line_color=ROUGE, annotation_text="Résistance",
                       annotation_font_color=ROUGE, row=1, col=1)
-
     fig.add_trace(go.Scatter(x=df.index, y=df["RSI"], name="RSI", line=dict(color=style.MARINE_CLAIR)), row=2, col=1)
     fig.add_hrect(y0=30, y1=70, fillcolor="rgba(201,162,39,0.07)", line_width=0, row=2, col=1)
-
     ecart_macd = df["MACD"] - df["MACD_signal"]
     fig.add_trace(go.Bar(x=df.index, y=ecart_macd, name="Écart MACD",
                          marker_color=[VERT if v >= 0 else ROUGE for v in ecart_macd.fillna(0)], opacity=0.55),
@@ -596,116 +727,142 @@ def afficher_graphique(df: pd.DataFrame) -> None:
     fig.add_trace(go.Scatter(x=df.index, y=df["MACD"], name="MACD", line=dict(color=MARINE, width=1.6)), row=3, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df["MACD_signal"], name="Signal", line=dict(color=OR, width=1.4)),
                   row=3, col=1)
-
-    fig.update_layout(height=640, margin=dict(l=10, r=10, t=20, b=10), hovermode="x unified",
-                      legend=dict(orientation="h", y=1.06), separators=", ")
+    fig.update_layout(height=600, margin=dict(l=10, r=10, t=20, b=10), hovermode="x unified",
+                      legend=dict(orientation="h", y=1.06))
     fig.update_annotations(font=dict(size=12, color=GRIS))
     st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+    st.caption("RSI au-dessus de 70 : l'action a beaucoup monté ; sous 30 : elle a beaucoup baissé. "
+               "MACD : barres vertes = élan à la hausse, rouges = élan à la baisse. Voir le Guide pour le détail.")
 
 
 def afficher_detail(analyse, reglages: dict) -> None:
-    if analyse.arguments:
-        st.dataframe(pd.DataFrame([{
-            "Outil": a.outil.capitalize(),
-            "Argument": a.texte,
-            "Effet": nombre(a.valeur, 1),
-        } for a in analyse.arguments]), hide_index=True, width="stretch")
-    else:
-        st.caption("Aucun signal marqué.")
-
+    gauche, droite = st.columns(2)
     sim = analyse.simulation
-    if sim:
-        st.markdown("**Simulation sur une semaine (10 000 scénarios)**")
-        html(f"<div class='hk-recap'><span>Probabilité de hausse</span><b>{pourcent(sim['proba_hausse'], 0)}</b></div>"
-             f"<div class='hk-recap'><span>Perte possible (95 %)</span><b>{pourcent(sim['perte_95'], 1)}</b></div>"
-             f"<div class='hk-recap'><span>Seuil de votre profil</span><b>{pourcent(reglages['var_max'], 0)}</b></div>")
-        fig = go.Figure(go.Histogram(x=sim["rendements"] * 100, nbinsx=50, marker_color=style.MARINE_CLAIR,
-                                     opacity=0.85))
-        fig.add_vline(x=0, line_dash="dot", line_color=GRIS)
-        fig.update_layout(height=200, xaxis_title="Gain ou perte sur 1 semaine (%)", yaxis_title="",
-                          margin=dict(l=10, r=10, t=10, b=10), separators=", ")
-        st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
-
-    if analyse.ratios:
-        st.markdown("**Ratios financiers**")
-        for cle, libelle in financier.LIBELLES.items():
-            v = analyse.ratios.get(cle)
-            texte = nombre(v, 1) if cle in ("per", "dette_ebitda") else pourcent(v)
-            html(f"<div class='hk-recap'><span>{libelle}</span><b>{texte}</b></div>")
-        st.caption("Calculés à partir de data/comptes.csv : à vérifier dans les rapports annuels.")
+    with gauche:
+        if sim:
+            st.markdown("**Simulation de la semaine prochaine (10 000 scénarios)**")
+            html(recap([
+                ("Chances que le prix monte", pourcent(sim["proba_hausse"], 0)),
+                ("Perte possible dans les pires cas (5 %)", pourcent(sim["perte_95"], 1)),
+                ("Limite acceptée par votre profil", pourcent(reglages["var_max"], 0)),
+            ]))
+            fig = go.Figure(go.Histogram(x=sim["rendements"] * 100, nbinsx=50, marker_color=style.MARINE_CLAIR,
+                                         opacity=0.85))
+            fig.add_vline(x=0, line_dash="dot", line_color=GRIS)
+            fig.update_layout(height=220, xaxis_title="Gain ou perte en une semaine (%)", yaxis_title="Scénarios",
+                              margin=dict(l=10, r=10, t=10, b=10))
+            st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
+    with droite:
+        if analyse.ratios:
+            st.markdown("**Santé financière (5 ratios)**")
+            lignes = []
+            for cle, libelle in financier.LIBELLES.items():
+                v = analyse.ratios.get(cle)
+                lignes.append((libelle, nombre(v, 1) if cle in ("per", "dette_ebitda") else pourcent(v)))
+            html(recap(lignes))
+            st.caption("Calculés à partir des comptes annuels (data/comptes.csv) et comparés aux 4 autres "
+                       "entreprises.")
+        st.markdown("**Poids de chaque point dans la note globale**")
+        html(recap([(textes.OUTILS[o][0], pourcent(reglages[moteur.CLES_POIDS[o]], 0))
+                    for o in ["graphique", "infos", "financier", "hasard"]]))
 
 
 # =====================================================================
-# Écran 4 – Achat / vente (A7)
+# Acheter / vendre (A7)
 # =====================================================================
-def ecran_achat_vente() -> None:
-    style.entete("Achat / vente", "Passer un ordre", "Achetez ou vendez au dernier cours connu, frais compris.")
-    r = base.lire_reglages()
+def ecran_achat_vente(analyses: dict) -> None:
+    numero = uid()
+    style.entete("Acheter ou vendre", "Passer un ordre",
+                 "En 3 étapes. L'opération se fait au dernier prix connu, frais compris.")
+    r = base.lire_reglages(numero)
     taux = r["taux_frais"]
 
-    gauche, droite = st.columns([1.25, 1])
+    gauche, droite = st.columns([1.3, 1])
     with gauche, st.container(border=True):
-        code = choisir_action()
+        question(1, "Quelle entreprise ?")
+        code = choisir_action(libelle="Entreprise")
         cours, date_cours = donnees.dernier_cours(code)
         if cours is None:
-            st.error("Cours indisponible pour le moment.")
+            st.error("Prix indisponible pour le moment.")
             return
-        sens = st.segmented_control("Opération", ["Achat", "Vente"], default="Achat", key="sens_ordre") or "Achat"
-        detenus = portefeuille.positions().get(code, {}).get("quantite", 0)
-        maximum = quantite_maximale(code, sens, cours, detenus, r)
-        quantite = champ_nombre("Quantité (nombre de titres)", "quantite_ordre", defaut=1, entier=True,
-                                aide="Nombre entier. Les espaces sont acceptés : 1 500.")
-        st.caption(f"Maximum possible : {nombre(maximum, 0)} titre{'s' if maximum > 1 else ''}"
-                   + (f" (limites du profil {r['profil']})" if sens == "Achat" else ""))
-        if sens == "Achat" and portefeuille.limite_atteinte():
+        detenus = portefeuille.positions(numero).get(code, {}).get("quantite", 0)
+        analyse = analyses.get(code)
+        if analyse:
+            conseil, _ = moteur.conseiller(analyse, detenus > 0, r)
+            html(f"<div style='font-size:.9rem;color:{GRIS};margin:-.2rem 0 .4rem'>Notre conseil : "
+                 f"{style.pastille_conseil(conseil)} &nbsp;· vous en avez {nombre(detenus, 0)}</div>")
+
+        question(2, "Que voulez-vous faire ?")
+        sens = st.segmented_control("Opération", ["Acheter", "Vendre"], default="Acheter", key="sens_ordre",
+                                    label_visibility="collapsed") or "Acheter"
+
+        question(3, "Combien ?")
+        mode = st.radio("Saisie", ["En euros", "En nombre d'actions"], horizontal=True, key="mode_saisie",
+                        label_visibility="collapsed")
+        maximum = quantite_maximale(numero, code, sens, cours, detenus, r)
+        if mode == "En euros":
+            montant = champ_nombre("Montant (€)", "montant_ordre", defaut=10_000, exemple="ex. 10 000",
+                                   masquer_libelle=True)
+            if sens == "Acheter":
+                qte = portefeuille.quantite_possible(montant or 0, cours, taux)
+            else:
+                qte = int((montant or 0) // cours)
+            st.caption(f"Soit **{nombre(qte, 0)} action{'s' if qte > 1 else ''}** à {euros(cours)}.")
+        else:
+            saisie = champ_nombre("Nombre d'actions", "quantite_ordre", defaut=1, entier=True, masquer_libelle=True)
+            qte = int(saisie) if saisie is not None and float(saisie).is_integer() else saisie
+        st.caption(f"Maximum possible : {nombre(maximum, 0)} action{'s' if maximum > 1 else ''}"
+                   + (f" (selon votre argent disponible et votre profil {r['profil']})" if sens == "Acheter"
+                      else " (celles que vous possédez)"))
+        if sens == "Acheter" and portefeuille.limite_atteinte(numero):
             st.warning("Limite de perte atteinte : les achats sont bloqués.")
 
-        valide = quantite is not None and float(quantite).is_integer()
-        qte = int(quantite) if valide else quantite
         attente = st.session_state.get("ordre_en_attente")
         if attente is None:
-            st.button("Passer l'ordre", type="primary", width="stretch", on_click=preparer_ordre,
-                      args=(code, sens.lower(), qte, cours))
+            st.button(f"{sens}", type="primary", width="stretch", icon=":material/arrow_forward:",
+                      on_click=preparer_ordre, args=(code, "achat" if sens == "Acheter" else "vente", qte, cours))
         else:
-            operation = "l'achat" if attente["sens"] == "achat" else "la vente"
-            st.warning(f"Confirmez-vous {operation} de {nombre(attente['quantite'], 0)} "
-                       f"{config.ACTIONS[attente['code']]} à {euros(attente['prix'])} ?")
+            operation = "acheter" if attente["sens"] == "achat" else "vendre"
+            st.warning(f"Vous allez **{operation} {nombre(attente['quantite'], 0)} action"
+                       f"{'s' if attente['quantite'] > 1 else ''} {config.ACTIONS[attente['code']]}** "
+                       f"à {euros(attente['prix'])}. On confirme ?")
             c1, c2 = st.columns(2)
-            c1.button("Confirmer", type="primary", icon=":material/check:", on_click=confirmer_ordre,
+            c1.button("Oui, confirmer", type="primary", icon=":material/check:", on_click=confirmer_ordre,
                       width="stretch")
             c2.button("Annuler", icon=":material/close:", width="stretch",
                       on_click=lambda: st.session_state.pop("ordre_en_attente", None))
 
     with droite, st.container(border=True):
         st.markdown("### Récapitulatif")
-        q = qte if valide else 0
-        montant = q * cours
-        frais = portefeuille.calculer_frais(montant, taux)
-        total = montant + frais if sens == "Achat" else montant - frais
-        liq_apres = portefeuille.liquidites() + (-total if sens == "Achat" else total)
-        lignes = [
-            ("Cours", f"{euros(cours)} <small>({date_fr(date_cours)})</small>"),
-            ("Titres détenus", nombre(detenus, 0)),
-            ("Montant", euros(montant)),
-            (f"Frais ({pourcent(taux, 2)})", euros(frais)),
-            ("Liquidités après l'ordre", euros(liq_apres)),
-        ]
-        html("".join(f"<div class='hk-recap'><span>{a}</span><b>{b}</b></div>" for a, b in lignes)
-             + f"<div class='hk-recap total'><span>{'Total à payer' if sens == 'Achat' else 'Total encaissé'}</span>"
-               f"<span>{euros(total)}</span></div>")
+        q = qte if isinstance(qte, int) and qte > 0 else 0
+        brut = q * cours
+        frais = portefeuille.calculer_frais(brut, taux)
+        achat = sens == "Acheter"
+        total = brut + frais if achat else brut - frais
+        liq_apres = portefeuille.liquidites(numero) + (-total if achat else total)
+        html(recap([
+            ("Entreprise", config.ACTIONS[code]),
+            ("Prix d'une action", f"{euros(cours)} <small style='color:{GRIS}'>({date_fr(date_cours)})</small>"),
+            ("Nombre d'actions", nombre(q, 0)),
+            ("Montant", euros(brut)),
+            (f"Frais ({pourcent(taux, 2)}) {style.aide('Ce que prend l’intermédiaire à chaque opération.')}",
+             euros(frais)),
+            ("Argent disponible après", euros(liq_apres)),
+        ], ("Vous payez" if achat else "Vous recevez", euros(total))))
 
 
-def quantite_maximale(code: str, sens: str, cours: float, detenus: int, r: dict) -> int:
-    if sens == "Vente":
+def quantite_maximale(numero: int, code: str, sens: str, cours: float, detenus: int, r: dict) -> int:
+    if sens == "Vendre":
         return detenus
-    etat = portefeuille.valeur(donnees.cours_actuels())
+    etat = portefeuille.valeur(numero, donnees.cours_actuels())
     selon_liquidites = (etat["liquidites"] - r["reserve_min"] * etat["valeur"]) / (cours * (1 + r["taux_frais"]))
     selon_plafond = r["max_par_action"] * etat["valeur"] / cours - detenus
     return max(int(min(selon_liquidites, selon_plafond)), 0)
 
 
 def preparer_ordre(code: str, sens: str, quantite, prix: float) -> None:
-    ok, message = portefeuille.verifier_ordre(code, sens, quantite, prix, base.lire_reglages()["taux_frais"])
+    ok, message = portefeuille.verifier_ordre(uid(), code, sens, quantite, prix,
+                                              base.lire_reglages(uid())["taux_frais"])
     if ok:
         st.session_state["ordre_en_attente"] = {"code": code, "sens": sens, "quantite": quantite, "prix": prix}
     else:
@@ -715,254 +872,313 @@ def preparer_ordre(code: str, sens: str, quantite, prix: float) -> None:
 def confirmer_ordre() -> None:
     attente = st.session_state.pop("ordre_en_attente", None)
     if attente:
-        ok, message = portefeuille.passer_ordre(taux=base.lire_reglages()["taux_frais"], **attente)
+        ok, message = portefeuille.passer_ordre(uid(), taux=base.lire_reglages(uid())["taux_frais"], **attente)
         flash("success" if ok else "error", message)
         if ok:
             calculer_analyses.clear()
 
 
 # =====================================================================
-# Écran 5 – Profil de risque
+# Mon profil
 # =====================================================================
+def regles_simples(valeurs: dict) -> list:
+    reserve = valeurs["reserve_min"]
+    return [
+        f"Vente automatique si la perte atteint {pourcent(-valeurs['seuil_vente_auto'], 0)}",
+        f"Au plus {pourcent(valeurs['max_par_action'], 0)} de l'argent sur une même entreprise",
+        f"Au moins {pourcent(reserve, 0)} d'argent toujours gardé de côté" if reserve else
+        "Tout l'argent peut être investi",
+        "Achat conseillé seulement si les signaux sont " +
+        ("très nets" if valeurs["seuil_achat"] >= 0.8 else "bons" if valeurs["seuil_achat"] >= 0.5 else
+         "plutôt bons"),
+    ]
+
+
 def ecran_profil() -> None:
-    r = base.lire_reglages()
-    style.entete("Mon profil de risque", "Profil investisseur",
-                 "Le profil adapte les conseils, les limites d'achat et la protection contre les pertes.")
+    numero = uid()
+    r = base.lire_reglages(numero)
+    debut = not portefeuille.depart_fait(numero)
+    style.entete("Mon profil d'investisseur", "Étape 1 sur 3" if debut else "Profil",
+                 "Votre profil adapte nos conseils, les limites d'achat et la protection contre les pertes.")
+    if debut:
+        html(etapes_demarrage(1))
+
+    st.markdown("### Les 3 profils")
+    for colonne, (nom, valeurs) in zip(st.columns(3), config.PROFILS.items()):
+        actif = nom == r["profil"] and r.get("profil_defini")
+        couleur = style.COULEURS_PROFIL[nom]
+        lignes = "".join(f"<li>{icone('valide', 16, couleur, 2.5)}<span>{t}</span></li>" for t in regles_simples(valeurs))
+        html(f"<div class='hk-profil{' actif' if actif else ''}'>"
+             f"<div class='hk-profil-nom' style='color:{couleur}'>{nom}"
+             f"{' &nbsp;' + style.pastille('Votre profil', couleur) if actif else ''}</div>"
+             f"<div class='hk-profil-pour'>{textes.PROFILS_SIMPLES[nom]}</div><ul>{lignes}</ul></div>", colonne)
+        colonne.button("Profil actuel" if actif else f"Choisir {nom}", key=f"choisir_{nom}", width="stretch",
+                       disabled=bool(actif), type="secondary", on_click=_appliquer_profil, args=(nom,))
+    st.caption("La perte ne dépasse jamais 10 %, quel que soit le profil.")
+    st.write("")
 
     with st.container(border=True):
-        c1, c2 = st.columns([1.4, 1], vertical_alignment="center")
-        html(f"{style.pastille_profil(r['profil'])}<div style='font-size:1.05rem;margin-top:.5rem'>"
-             f"{config.RESUME_PROFILS[r['profil']]}</div>"
-             + ("" if r.get("profil_defini") else
-                "<div style='color:#6B7280;font-size:.85rem;margin-top:.3rem'>Profil par défaut : "
-                "répondez au questionnaire pour l'ajuster.</div>"), c1)
-        c2.selectbox("Choisir directement", list(config.PROFILS), index=list(config.PROFILS).index(r["profil"]),
-                     key="profil_direct", on_change=appliquer_profil_direct)
-
-    gauche, droite = st.columns([1.2, 1])
-    with gauche, st.container(border=True):
-        st.markdown("### Questionnaire")
+        st.markdown("### Vous hésitez ? Répondez à 4 questions")
+        st.caption("Nous choisirons le profil qui vous correspond. Il n'y a pas de bonne ou de mauvaise réponse.")
         with st.form("questionnaire", border=False):
-            for i, (question, reponses) in enumerate(profil.QUESTIONS):
-                st.radio(question, [texte for texte, _ in reponses], index=None, key=f"question_{i}")
-            st.form_submit_button("Calculer mon profil", type="primary", on_click=appliquer_questionnaire)
-
-    with droite, st.container(border=True):
-        st.markdown("### Ce que change le profil")
-        noms = list(config.PROFILS)
-        entetes = "".join(
-            f"<th style='text-align:right;padding:.4rem .5rem;color:{style.COULEURS_PROFIL[n]}'>{n}</th>" for n in noms)
-        corps = ""
-        for cle, libelle in LIBELLES_REGLES.items():
-            cellules = ""
-            for n in noms:
-                v = config.PROFILS[n][cle]
-                texte = nombre(v, 1) if cle in ("seuil_achat", "seuil_vente") else pourcent(v, 0)
-                fond = "background:#F4F6FA;font-weight:700;" if n == r["profil"] else ""
-                cellules += f"<td style='text-align:right;padding:.45rem .5rem;{fond}'>{texte}</td>"
-            corps += (f"<tr style='border-top:1px solid #EEF1F6'><td style='padding:.45rem .5rem;color:#4B5563'>"
-                      f"{libelle}</td>{cellules}</tr>")
-        html(f"<table style='width:100%;border-collapse:collapse;font-size:.88rem'>"
-             f"<tr><th></th>{entetes}</tr>{corps}</table>")
-        st.caption("La perte maximale ne dépasse jamais 10 %, quel que soit le profil.")
+            for i, (texte_question, reponses) in enumerate(profil.QUESTIONS):
+                st.radio(f"{i + 1}. {texte_question}", [t for t, _ in reponses], index=None, key=f"question_{i}")
+            st.form_submit_button("Trouver mon profil", type="primary", on_click=appliquer_questionnaire)
 
 
 def appliquer_questionnaire() -> None:
     reponses = [st.session_state.get(f"question_{i}") for i in range(len(profil.QUESTIONS))]
     if None in reponses:
-        flash("error", "Répondez aux 4 questions.")
+        flash("error", "Répondez aux 4 questions pour trouver votre profil.")
         return
     points = [dict(choix)[rep] for (_, choix), rep in zip(profil.QUESTIONS, reponses)]
     _appliquer_profil(profil.calculer_profil(points))
 
 
-def appliquer_profil_direct() -> None:
-    _appliquer_profil(st.session_state["profil_direct"])
-
-
 def _appliquer_profil(nom: str) -> None:
-    base.choisir_profil(nom)
+    base.choisir_profil(uid(), nom)
     calculer_analyses.clear()
-    st.session_state.pop("profil_direct", None)
-    flash("success", f"Profil {nom} appliqué. {config.RESUME_PROFILS[nom]}")
-    if not portefeuille.depart_fait():
-        aller_a("Répartition de départ")
+    flash("success", f"Profil {nom} choisi : {textes.PROFILS_SIMPLES[nom].lower()}")
+    if not portefeuille.depart_fait(uid()):
+        aller_a("Investir mon capital")
 
 
 # =====================================================================
-# Écran 6 – Historique et réglages
+# Historique
 # =====================================================================
-def ecran_historique_reglages() -> None:
-    style.entete("Historique et réglages", "Suivi", "Vos ordres, l'évolution du portefeuille et les paramètres.")
-    onglets = st.tabs(["Ordres", "Évolution", "Réglages", "Données et sauvegarde", "Compte"])
-    ordres = portefeuille.lire_ordres()
-    hist = portefeuille.lire_historique()
-
-    with onglets[0]:
+def ecran_historique() -> None:
+    numero = uid()
+    style.entete("Historique", "Suivi", "Toutes vos opérations et l'évolution de votre portefeuille.")
+    ordres = portefeuille.lire_ordres(numero)
+    hist = portefeuille.lire_historique(numero)
+    operations, evolution = st.tabs(["Mes opérations", "Évolution jour par jour"])
+    with operations:
         if ordres.empty:
-            st.caption("Aucun ordre pour le moment.")
+            st.info("Aucune opération pour le moment.")
         else:
+            montant = ordres["quantite"] * ordres["prix"]
+            total = montant.where(ordres["sens"] == "vente", montant + ordres["frais"])
+            total = total.where(ordres["sens"] == "achat", montant - ordres["frais"])
             st.dataframe(pd.DataFrame({
                 "Date": pd.to_datetime(ordres["date"]).dt.strftime("%d/%m/%Y %H:%M"),
-                "Action": ordres["code"].map(config.ACTIONS),
-                "Sens": ordres["sens"].str.capitalize(),
-                "Quantité": ordres["quantite"].map(lambda x: nombre(x, 0)),
-                "Prix": ordres["prix"].map(euros),
+                "Entreprise": ordres["code"].map(config.ACTIONS),
+                "Opération": ordres["sens"].map({"achat": "Achat", "vente": "Vente"}),
+                "Nombre d'actions": ordres["quantite"].map(lambda x: nombre(x, 0)),
+                "Prix unitaire": ordres["prix"].map(euros),
                 "Frais": ordres["frais"].map(euros),
-                "Origine": ordres["automatique"].map({0: "Client", 1: "Vente automatique"}),
+                "Total": total.map(euros),
+                "Décidé par": ordres["automatique"].map({0: "Vous", 1: "Vente automatique"}),
             }).iloc[::-1], hide_index=True, width="stretch")
-        st.download_button("Exporter en Excel", icon=":material/download:", data=export_excel(ordres, hist),
-                           file_name=f"portefeuille_{date.today():%Y-%m-%d}.xlsx",
+        st.download_button("Télécharger en Excel", icon=":material/download:", data=export_excel(ordres, hist),
+                           file_name=f"cap500_historique_{date.today():%Y-%m-%d}.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-
-    with onglets[1]:
-        graphique_historique()
+    with evolution:
+        graphique_historique(numero)
         if not hist.empty:
             st.dataframe(pd.DataFrame({
                 "Date": hist["date"].dt.strftime("%d/%m/%Y"),
-                "Valeur": hist["valeur"].map(euros),
-                "Liquidités": hist["liquidites"].map(euros),
-                config.NOM_INDICE: hist["cac40"].map(nombre),
+                "Valeur du portefeuille": hist["valeur"].map(euros),
+                "Argent disponible": hist["liquidites"].map(euros),
+                "CAC 40": hist["cac40"].map(nombre),
             }).iloc[::-1], hide_index=True, width="stretch")
-
-    with onglets[2]:
-        formulaire_reglages()
-    with onglets[3]:
-        section_donnees()
-    with onglets[4]:
-        section_compte()
 
 
 def export_excel(ordres: pd.DataFrame, hist: pd.DataFrame) -> bytes:
     tampon = io.BytesIO()
+    colonnes = ["date", "code", "sens", "quantite", "prix", "frais", "automatique"]
     with pd.ExcelWriter(tampon, engine="openpyxl") as fichier:
-        ordres.to_excel(fichier, sheet_name="Ordres", index=False)
+        ordres.reindex(columns=colonnes).to_excel(fichier, sheet_name="Opérations", index=False)
         hist.to_excel(fichier, sheet_name="Historique", index=False)
     return tampon.getvalue()
 
 
+# =====================================================================
+# Réglages
+# =====================================================================
+def ecran_reglages() -> None:
+    style.entete("Réglages", "Compte et paramètres", "Votre compte, vos sauvegardes et les réglages avancés.")
+    compte, sauvegarde, avances, donnees_ = st.tabs(["Mon compte", "Sauvegarde", "Réglages avancés", "Données"])
+    with compte:
+        section_compte()
+    with sauvegarde:
+        section_sauvegarde()
+    with avances:
+        formulaire_reglages()
+    with donnees_:
+        section_donnees()
+
+
+def section_compte() -> None:
+    numero = uid()
+    gauche, droite = st.columns(2)
+    with gauche, st.container(border=True):
+        st.markdown("### Changer de mot de passe")
+        st.caption(f"Identifiant : **{style.echapper(auth.identifiant(numero))}**")
+        with st.form("mot_de_passe", border=False, clear_on_submit=True):
+            actuel = st.text_input("Mot de passe actuel", type="password")
+            mdp = st.text_input("Nouveau mot de passe", type="password")
+            confirmation = st.text_input("Retapez le nouveau mot de passe", type="password")
+            if st.form_submit_button("Modifier", type="primary"):
+                ok, message = auth.changer_mot_de_passe(numero, actuel, mdp, confirmation)
+                (st.success if ok else st.error)(message)
+
+        st.markdown("### Nouveau code de récupération")
+        st.caption("À faire si vous avez perdu votre code. Le nouveau code remplace l'ancien.")
+        with st.form("nouveau_code", border=False, clear_on_submit=True):
+            mdp_code = st.text_input("Mot de passe actuel", type="password", key="mdp_code")
+            if st.form_submit_button("Créer un nouveau code"):
+                if auth.verifier_mot_de_passe(numero, mdp_code):
+                    html(f"<div class='hk-code'>{auth.nouveau_code_recuperation(numero)}</div>")
+                    st.caption("Notez-le : il ne sera plus affiché.")
+                else:
+                    st.error("Mot de passe incorrect.")
+
+    with droite, st.container(border=True):
+        st.markdown("### Repartir de zéro")
+        st.write("Votre portefeuille actuel est archivé et vous recommencez avec 500 000 €. "
+                 "Votre compte et votre profil sont conservés.")
+        st.text_input("Pour confirmer, tapez RECOMMENCER", key="confirmation_reinit")
+        st.button("Repartir de zéro", icon=":material/restart_alt:", on_click=reinitialiser,
+                  disabled=st.session_state.get("confirmation_reinit", "").strip().upper() != "RECOMMENCER")
+
+
+def reinitialiser() -> None:
+    base.reinitialiser_portefeuille(uid())
+    calculer_analyses.clear()
+    st.session_state["confirmation_reinit"] = ""
+    flash("success", "C'est reparti : vous avez de nouveau 500 000 € à investir.")
+    aller_a("Investir mon capital")
+
+
+def section_sauvegarde() -> None:
+    numero = uid()
+    with st.container(border=True):
+        st.markdown("### Télécharger mes données")
+        st.write("Un fichier avec toutes vos opérations, votre historique et vos réglages. Utile si l'application "
+                 "est en ligne : vous pourrez tout récupérer si les données sont effacées.")
+        st.download_button("Télécharger ma sauvegarde", icon=":material/download:", data=base.exporter_compte(numero),
+                           file_name=f"cap500_{auth.identifiant(numero)}_{date.today():%Y-%m-%d}.json",
+                           mime="application/json")
+    with st.container(border=True):
+        st.markdown("### Restaurer une sauvegarde")
+        st.write("Remplace votre portefeuille actuel par celui du fichier (l'actuel est archivé, pas supprimé).")
+        fichier = st.file_uploader("Fichier de sauvegarde (.json)", type=["json"], key="fichier_restauration")
+        if fichier is not None and st.button("Restaurer", icon=":material/upload:"):
+            ok, message = base.importer_compte(numero, fichier.getvalue())
+            if ok:
+                calculer_analyses.clear()
+            flash("success" if ok else "error", message)
+            st.rerun()
+
+
 def formulaire_reglages() -> None:
-    r = base.lire_reglages()
-    st.caption("Les nombres s'écrivent avec une virgule : 0,5 ou 12,5. "
-               "Changer de profil remet les seuils de ce profil.")
+    r = base.lire_reglages(uid())
+    html(f"<div class='hk-resume' style='display:flex;gap:.7rem'>{style.rond('info', OR)}<div>"
+         "<b>Réservé aux connaisseurs.</b> Ces réglages changent la façon dont les conseils sont calculés. "
+         "Choisir un profil (page Mon profil) remet les seuils du profil.</div></div>")
     with st.form("reglages"):
-        st.markdown("**Poids des 4 outils dans le score** (total = 100 %)")
+        st.markdown("**Importance de chaque point dans la note globale** (le total doit faire 100 %)")
         c = st.columns(4)
         saisies = {
-            "poids_graphique": c[0].text_input("Graphique (%)", texte_nombre(r["poids_graphique"] * 100)),
-            "poids_infos": c[1].text_input("Informations (%)", texte_nombre(r["poids_infos"] * 100)),
-            "poids_financier": c[2].text_input("Financier (%)", texte_nombre(r["poids_financier"] * 100)),
-            "poids_hasard": c[3].text_input("Hasard (%)", texte_nombre(r["poids_hasard"] * 100)),
+            "poids_graphique": c[0].text_input("Tendance du prix (%)", texte_nombre(r["poids_graphique"] * 100)),
+            "poids_infos": c[1].text_input("Experts et actualités (%)", texte_nombre(r["poids_infos"] * 100)),
+            "poids_financier": c[2].text_input("Santé de l'entreprise (%)", texte_nombre(r["poids_financier"] * 100)),
+            "poids_hasard": c[3].text_input("Risque simulé (%)", texte_nombre(r["poids_hasard"] * 100)),
         }
-        st.markdown("**Seuils de recommandation et frais**")
+        st.markdown("**Seuils des conseils et frais**")
         c = st.columns(3)
-        saisies["seuil_achat"] = c[0].text_input("Acheter si le score atteint", texte_nombre(r["seuil_achat"]))
-        saisies["seuil_vente"] = c[1].text_input("Vendre si le score descend à", texte_nombre(r["seuil_vente"]))
-        saisies["taux_frais"] = c[2].text_input("Frais de courtage (%)", texte_nombre(r["taux_frais"] * 100, 3))
+        saisies["seuil_achat"] = c[0].text_input("Acheter si la note atteint", texte_nombre(r["seuil_achat"]))
+        saisies["seuil_vente"] = c[1].text_input("Vendre si la note descend à", texte_nombre(r["seuil_vente"]))
+        saisies["taux_frais"] = c[2].text_input("Frais par opération (%)", texte_nombre(r["taux_frais"] * 100, 3))
         if st.form_submit_button("Enregistrer", type="primary"):
             valeurs = {cle: lire_nombre(texte) for cle, texte in saisies.items()}
             poids = ["poids_graphique", "poids_infos", "poids_financier", "poids_hasard"]
             if None in valeurs.values():
-                st.error("Un des champs ne contient pas un nombre valide.")
+                st.error("Un des champs ne contient pas un nombre (exemple : 12,5).")
             elif abs(sum(valeurs[p] for p in poids) - 100) > 0.01:
-                st.error(f"Le total des poids doit faire 100 % (actuellement "
-                         f"{nombre(sum(valeurs[p] for p in poids), 1)} %).")
+                st.error(f"Le total doit faire 100 % (actuellement {nombre(sum(valeurs[p] for p in poids), 1)} %).")
             elif not -2 <= valeurs["seuil_vente"] < valeurs["seuil_achat"] <= 2:
-                st.error("Les seuils doivent être entre −2 et 2, celui de vente sous celui d'achat.")
+                st.error("Les seuils vont de −2 à 2, et celui de vente doit être plus bas que celui d'achat.")
             elif not 0 <= valeurs["taux_frais"] <= 5:
                 st.error("Les frais doivent être entre 0 et 5 %.")
             else:
                 for p in poids:
-                    base.ecrire_reglage(p, valeurs[p] / 100)
-                base.ecrire_reglage("seuil_achat", valeurs["seuil_achat"])
-                base.ecrire_reglage("seuil_vente", valeurs["seuil_vente"])
-                base.ecrire_reglage("taux_frais", valeurs["taux_frais"] / 100)
+                    base.ecrire_reglage(uid(), p, valeurs[p] / 100)
+                base.ecrire_reglage(uid(), "seuil_achat", valeurs["seuil_achat"])
+                base.ecrire_reglage(uid(), "seuil_vente", valeurs["seuil_vente"])
+                base.ecrire_reglage(uid(), "taux_frais", valeurs["taux_frais"] / 100)
                 calculer_analyses.clear()
                 st.success("Réglages enregistrés.")
 
 
 def section_donnees() -> None:
-    st.markdown("**Importer des cours** (si le téléchargement automatique ne fonctionne pas)")
-    st.caption("Fichier CSV avec au moins une colonne « date » et une colonne « clôture » (ex. export ABC Bourse).")
-    code = st.selectbox("Action concernée", list(config.ACTIONS) + [config.INDICE],
-                        format_func=lambda c: config.ACTIONS.get(c, config.NOM_INDICE), key="code_import")
+    st.markdown("**Importer des prix** (si la mise à jour automatique ne fonctionne pas)")
+    st.caption("Fichier CSV avec au moins une colonne « date » et une colonne « clôture » (export ABC Bourse par exemple).")
+    code = st.selectbox("Entreprise concernée", list(config.ACTIONS) + [config.INDICE],
+                        format_func=lambda c: config.ACTIONS.get(c, "CAC 40"), key="code_import")
     fichier = st.file_uploader("Fichier CSV", type=["csv", "txt"])
     if fichier is not None and st.button("Importer"):
         try:
             nb = donnees.importer_csv_cours(fichier, code)
             calculer_analyses.clear()
-            st.success(f"{nb} cours importés.")
+            st.success(f"{nb} prix importés.")
         except ValueError as erreur:
             st.error(str(erreur))
-
     st.divider()
-    st.markdown("**Sauvegarde complète** (compte, ordres, historique, réglages)")
-    st.caption("Utile si l'application est en ligne : téléchargez la sauvegarde régulièrement, "
-               "et restaurez-la si les données ont été effacées.")
-    c1, c2 = st.columns(2)
-    c1.download_button("Télécharger la sauvegarde", icon=":material/download:", data=base.exporter_base(),
-                       file_name=f"cap500_sauvegarde_{date.today():%Y-%m-%d}.db",
-                       mime="application/octet-stream", width="stretch")
-    restauration = c2.file_uploader("Restaurer une sauvegarde (.db)", type=["db"], key="fichier_restauration")
-    if restauration is not None and c2.button("Restaurer", width="stretch"):
-        ok, message = base.restaurer_base(restauration.getvalue())
-        if ok:
-            tout_recalculer()
-        flash("success" if ok else "error", message)
-        st.rerun()
-
-    st.divider()
-    st.markdown("**Comptes annuels** – à modifier dans `data/comptes.csv`")
+    st.markdown("**Comptes annuels des entreprises** – fichier `data/comptes.csv`")
     comptes = donnees.charger_comptes()
     if not comptes.empty:
         st.dataframe(comptes, hide_index=True, width="stretch")
-    st.markdown("**Objectifs des analystes** – à mettre à jour chaque semaine dans `data/analystes.csv`")
+    st.markdown("**Objectifs des experts** – fichier `data/analystes.csv` (à mettre à jour chaque semaine)")
     analystes = donnees.charger_analystes()
     if not analystes.empty:
         st.dataframe(analystes, hide_index=True, width="stretch")
-    st.caption("Après une modification des fichiers, cliquez sur « Actualiser les données » dans le menu.")
+    st.caption("Après une modification de ces fichiers, cliquez sur « Actualiser les prix » dans le menu.")
 
 
-def section_compte() -> None:
-    gauche, droite = st.columns(2)
-    with gauche, st.container(border=True):
-        st.markdown("### Identifiant et mot de passe")
-        with st.form("identifiants", border=False):
-            actuel = st.text_input("Mot de passe actuel", type="password")
-            identifiant = st.text_input("Identifiant", value=auth.identifiant_actuel())
-            mdp = st.text_input("Nouveau mot de passe", type="password")
-            confirmation = st.text_input("Confirmer le mot de passe", type="password")
-            if st.form_submit_button("Modifier", type="primary"):
-                ok, message = auth.changer_identifiants(actuel, identifiant, mdp, confirmation)
-                (st.success if ok else st.error)(message)
-                if ok:
-                    st.session_state["identifiant"] = identifiant.strip()
+# =====================================================================
+# Guide
+# =====================================================================
+def ecran_guide() -> None:
+    style.entete("Guide", "Comprendre CAP 500", "Tout ce qu'il faut savoir, sans jargon.")
 
-        st.markdown("### Code de récupération")
-        st.caption("Un nouveau code remplace l'ancien.")
-        with st.form("nouveau_code", border=False):
-            mdp_code = st.text_input("Mot de passe actuel", type="password", key="mdp_code")
-            if st.form_submit_button("Générer un nouveau code"):
-                ok, message = auth.verifier(st.session_state.get("identifiant", ""), mdp_code)
-                if ok:
-                    html(f"<div class='hk-code'>{auth.nouveau_code_recuperation()}</div>")
-                    st.caption("Notez-le : il ne sera plus affiché.")
-                else:
-                    st.error(message)
+    st.markdown("### Comment ça marche ?")
+    for colonne, (i, (titre, texte)) in zip(st.columns(3), enumerate(textes.ETAPES, start=1)):
+        html(f"<div class='hk-note'><span class='hk-etape-num'>{i}</span><div class='hk-note-nom' "
+             f"style='margin-top:.5rem'>{titre}</div><div class='hk-note-question' style='font-size:.9rem'>"
+             f"{texte}</div></div>", colonne)
+    st.write("")
 
-    with droite, st.container(border=True):
-        st.markdown("### Réinitialiser le portefeuille")
-        st.caption("Supprime tous les ordres et l'historique pour repartir de 500 000 €. "
-                   "Le compte, le profil, les cours et les actualités sont conservés. Une copie de sécurité est faite.")
-        st.text_input("Tapez REINITIALISER pour confirmer", key="confirmation_reinit")
-        st.button("Réinitialiser le portefeuille", on_click=reinitialiser,
-                  disabled=st.session_state.get("confirmation_reinit") != "REINITIALISER")
+    st.markdown("### Comment sont décidés les conseils ?")
+    st.write("Pour chaque entreprise, CAP 500 étudie 4 points. Chacun reçoit une note de −2 (très défavorable) "
+             "à +2 (très favorable). La note globale est une moyenne où chaque point compte plus ou moins :")
+    poids = {"graphique": 40, "infos": 25, "financier": 20, "hasard": 15}
+    for colonne, (cle, (titre, technique, question_)) in zip(st.columns(4), textes.OUTILS.items()):
+        html(f"<div class='hk-note'><div class='hk-note-tech'>{technique}</div><div class='hk-note-nom'>{titre}</div>"
+             f"<div class='hk-note-verdict' style='color:{OR}'>{poids[cle]} %</div>"
+             f"<div class='hk-note-question'>{question_}</div></div>", colonne)
+    st.write("")
+    html(recap([
+        ("Note globale assez haute", f"{style.pastille_conseil('Acheter')}"),
+        ("Note globale assez basse (et vous possédez l'action)", f"{style.pastille_conseil('Vendre')}"),
+        ("Entre les deux", f"{style.pastille_conseil('Ne rien faire')}"),
+    ]))
+    st.caption("Les seuils exacts dépendent de votre profil (page Mon profil).")
+    st.write("")
 
-
-def reinitialiser() -> None:
-    base.copie_securite("avant_reinitialisation")
-    base.reinitialiser_portefeuille()
-    tout_recalculer()
-    st.session_state["confirmation_reinit"] = ""
-    flash("success", "Portefeuille réinitialisé.")
-    aller_a("Répartition de départ")
+    gauche, droite = st.columns([1, 1.1])
+    with gauche:
+        st.markdown("### Questions fréquentes")
+        for q, r in textes.FAQ:
+            with st.expander(q):
+                st.write(r)
+    with droite:
+        st.markdown("### Petit lexique")
+        recherche = st.text_input("Chercher un mot", placeholder="ex. dividende, RSI, PER…",
+                                  label_visibility="collapsed")
+        mots = [(m, d) for m, d in textes.LEXIQUE
+                if recherche.strip().lower() in (m + " " + d).lower()]
+        if not mots:
+            st.caption("Aucun mot trouvé.")
+        for mot, definition in mots:
+            html(f"<div class='hk-lexique'><b>{mot}</b><div>{definition}</div></div>")

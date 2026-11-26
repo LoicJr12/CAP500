@@ -16,15 +16,17 @@ from affichage import euros, nombre, pourcent
 # =====================================================================
 # Lecture de l'état du portefeuille
 # =====================================================================
-def lire_ordres() -> pd.DataFrame:
+def lire_ordres(uid: int) -> pd.DataFrame:
+    """Ordres du portefeuille en cours du compte."""
     with base.ouvrir() as con:
-        return pd.read_sql_query("SELECT * FROM ordres ORDER BY id", con)
+        return pd.read_sql_query("SELECT * FROM ordres WHERE utilisateur_id = ? AND portefeuille = ? ORDER BY id",
+                                 con, params=(uid, base.portefeuille_courant(uid)))
 
 
-def positions() -> dict:
+def positions(uid: int) -> dict:
     """{code: {"quantite": .., "prix_revient": ..}} pour les actions détenues."""
     suivi = {}
-    for o in lire_ordres().itertuples():
+    for o in lire_ordres(uid).itertuples():
         p = suivi.setdefault(o.code, {"quantite": 0, "cout": 0.0})
         if o.sens == "achat":
             p["cout"] += o.quantite * o.prix + o.frais
@@ -39,31 +41,32 @@ def positions() -> dict:
     }
 
 
-def liquidites() -> float:
+def liquidites(uid: int) -> float:
     with base.ouvrir() as con:
         mouvement = con.execute(
             "SELECT SUM(CASE sens WHEN 'achat' THEN -(quantite * prix + frais) "
-            "ELSE quantite * prix - frais END) FROM ordres"
+            "ELSE quantite * prix - frais END) FROM ordres WHERE utilisateur_id = ? AND portefeuille = ?",
+            (uid, base.portefeuille_courant(uid)),
         ).fetchone()[0]
     return config.CAPITAL + (mouvement or 0.0)
 
 
-def valeur(prix: dict) -> dict:
+def valeur(uid: int, prix: dict) -> dict:
     """Valeur totale = liquidités + Σ (quantité × dernier cours)."""
-    pos = positions()
+    pos = positions(uid)
     titres = sum(p["quantite"] * prix.get(code, p["prix_revient"]) for code, p in pos.items())
-    liq = liquidites()
+    liq = liquidites(uid)
     total = liq + titres
     return {"valeur": total, "liquidites": liq, "titres": titres,
             "perte": (total - config.CAPITAL) / config.CAPITAL}
 
 
-def depart_fait() -> bool:
-    return bool(base.lire_reglages().get("depart_fait")) or not lire_ordres().empty
+def depart_fait(uid: int) -> bool:
+    return bool(base.lire_reglages(uid).get("depart_fait")) or not lire_ordres(uid).empty
 
 
-def limite_atteinte() -> bool:
-    return bool(base.lire_reglages().get("limite_atteinte"))
+def limite_atteinte(uid: int) -> bool:
+    return bool(base.lire_reglages(uid).get("limite_atteinte"))
 
 
 # =====================================================================
@@ -73,7 +76,7 @@ def calculer_frais(montant: float, taux: float) -> float:
     return round(montant * taux, 2)
 
 
-def verifier_ordre(code: str, sens: str, quantite, prix, taux: float, automatique: bool = False,
+def verifier_ordre(uid: int, code: str, sens: str, quantite, prix, taux: float, automatique: bool = False,
                    controle_profil: bool = True):
     """Contrôles avant un ordre (règles RG2 à RG5 et limites du profil de risque). Renvoie (ok, message)."""
     if code not in config.ACTIONS:
@@ -88,28 +91,28 @@ def verifier_ordre(code: str, sens: str, quantite, prix, taux: float, automatiqu
     montant = quantite * prix
     frais = calculer_frais(montant, taux)
     if sens == "achat":
-        if limite_atteinte() and not automatique:
+        if limite_atteinte(uid) and not automatique:
             return False, "Limite de perte atteinte : les achats sont bloqués."
-        manque = montant + frais - liquidites()
+        manque = montant + frais - liquidites(uid)
         if manque > 1e-6:
             return False, f"Liquidités insuffisantes : il vous manque {euros(manque)}."
         if controle_profil and not automatique:
-            message = controler_profil(code, quantite, prix, montant + frais)
+            message = controler_profil(uid, code, quantite, prix, montant + frais)
             if message:
                 return False, message
     else:
-        detenus = positions().get(code, {}).get("quantite", 0)
+        detenus = positions(uid).get(code, {}).get("quantite", 0)
         if quantite > detenus:
             return False, f"Vous détenez seulement {nombre(detenus, 0)} titre{'s' if detenus > 1 else ''}."
     return True, ""
 
 
-def controler_profil(code: str, quantite: int, prix: float, cout: float):
+def controler_profil(uid: int, code: str, quantite: int, prix: float, cout: float):
     """Limites du profil de risque pour un achat : part maximale par action et réserve de liquidités."""
-    r = base.lire_reglages()
-    etat = valeur({**donnees.cours_actuels(), code: prix})
+    r = base.lire_reglages(uid)
+    etat = valeur(uid, {**donnees.cours_actuels(), code: prix})
     total = etat["valeur"]
-    detenus = positions().get(code, {}).get("quantite", 0)
+    detenus = positions(uid).get(code, {}).get("quantite", 0)
     part = (detenus + quantite) * prix / total
     if part > r["max_par_action"] + 1e-9:
         maximum = max(int(r["max_par_action"] * total / prix) - detenus, 0)
@@ -122,17 +125,19 @@ def controler_profil(code: str, quantite: int, prix: float, cout: float):
     return None
 
 
-def passer_ordre(code: str, sens: str, quantite, prix: float, taux: float, automatique: bool = False,
+def passer_ordre(uid: int, code: str, sens: str, quantite, prix: float, taux: float, automatique: bool = False,
                  controle_profil: bool = True):
     """Algorithme A7 : contrôle puis enregistre l'ordre. Renvoie (ok, message)."""
-    ok, message = verifier_ordre(code, sens, quantite, prix, taux, automatique, controle_profil)
+    ok, message = verifier_ordre(uid, code, sens, quantite, prix, taux, automatique, controle_profil)
     if not ok:
         return False, message
     frais = calculer_frais(quantite * prix, taux)
     with base.ouvrir() as con:
         con.execute(
-            "INSERT INTO ordres (date, code, sens, quantite, prix, frais, automatique) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (datetime.now().strftime("%Y-%m-%d %H:%M:%S"), code, sens, quantite, prix, frais, int(automatique)),
+            "INSERT INTO ordres (utilisateur_id, portefeuille, date, code, sens, quantite, prix, frais, automatique) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (uid, base.portefeuille_courant(uid), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), code, sens,
+             quantite, prix, frais, int(automatique)),
         )
     return True, (f"Ordre enregistré : {sens} de {nombre(quantite, 0)} {config.ACTIONS[code]} "
                   f"à {euros(prix)}.")
@@ -141,7 +146,7 @@ def passer_ordre(code: str, sens: str, quantite, prix: float, taux: float, autom
 # =====================================================================
 # A8 – Protection contre les pertes
 # =====================================================================
-def controler_perte(prix: dict, taux: float):
+def controler_perte(uid: int, prix: dict, taux: float):
     """
     Renvoie (niveau, message) :
       "vente"  : perte ≤ limite du profil (−10 % au plus) → toutes les actions viennent d'être vendues
@@ -149,19 +154,19 @@ def controler_perte(prix: dict, taux: float):
       "alerte" : perte ≤ seuil d'alerte du profil (−8 % pour Équilibré)
       None     : pas d'alerte
     """
-    r = base.lire_reglages()
+    r = base.lire_reglages(uid)
     limite = pourcent(-r["seuil_vente_auto"], 0)
-    etat = valeur(prix)
+    etat = valeur(uid, prix)
     perte = etat["perte"]
-    pos = positions()
+    pos = positions(uid)
 
     if perte <= r["seuil_vente_auto"]:
         vendues = 0
         for code, p in pos.items():
             if code in prix:
-                ok, _ = passer_ordre(code, "vente", p["quantite"], prix[code], taux, automatique=True)
+                ok, _ = passer_ordre(uid, code, "vente", p["quantite"], prix[code], taux, automatique=True)
                 vendues += ok
-        base.ecrire_reglage("limite_atteinte", True)
+        base.ecrire_reglage(uid, "limite_atteinte", True)
         if vendues:
             return "vente", f"Limite de {limite} atteinte : toutes vos actions ont été vendues automatiquement."
         return "limite", (f"Limite de {limite} atteinte (perte de {pourcent(-perte)}) : "
@@ -183,16 +188,16 @@ def quantite_possible(montant: float, prix: float, taux: float) -> int:
     return int(montant // (prix * (1 + taux)))
 
 
-def repartir(montants: dict, prix: dict, taux: float):
+def repartir(uid: int, montants: dict, prix: dict, taux: float):
     """Achète les titres de la répartition de départ. Renvoie (ok, message)."""
-    if depart_fait():
+    if depart_fait(uid):
         return False, "La répartition de départ a déjà été faite."
     total = sum(montants.values())
     if total > config.CAPITAL:
         return False, f"Le total dépasse votre capital de {euros(total - config.CAPITAL)}."
     if total <= 0:
         return False, "Saisissez au moins un montant."
-    r = base.lire_reglages()
+    r = base.lire_reglages(uid)
     for code, montant in montants.items():
         if montant > 0 and code not in prix:
             return False, f"Cours indisponible pour {config.ACTIONS[code]} : réessayez plus tard."
@@ -208,14 +213,14 @@ def repartir(montants: dict, prix: dict, taux: float):
     for code, montant in montants.items():
         quantite = quantite_possible(montant, prix.get(code), taux)
         if quantite > 0:
-            ok, message = passer_ordre(code, "achat", quantite, prix[code], taux, controle_profil=False)
+            ok, message = passer_ordre(uid, code, "achat", quantite, prix[code], taux, controle_profil=False)
             if not ok:
                 return False, message
             lignes += 1
-    base.ecrire_reglage("depart_fait", True)
+    base.ecrire_reglage(uid, "depart_fait", True)
     s = "s" if lignes > 1 else ""
     return True, (f"Portefeuille de départ enregistré : {lignes} action{s} achetée{s}, "
-                  f"{euros(liquidites())} en liquidités.")
+                  f"{euros(liquidites(uid))} en liquidités.")
 
 
 def repartition_conseillee(scores: dict, reglages: dict) -> dict:
@@ -245,18 +250,22 @@ def repartition_conseillee(scores: dict, reglages: dict) -> dict:
 # =====================================================================
 # Historique
 # =====================================================================
-def enregistrer_historique(valeur_totale: float, liquidites_: float, cac40) -> None:
+def enregistrer_historique(uid: int, valeur_totale: float, liquidites_: float, cac40) -> None:
     """Une ligne par jour (la dernière valeur de la journée remplace la précédente)."""
     with base.ouvrir() as con:
         con.execute(
-            "INSERT OR REPLACE INTO historique (date, valeur, liquidites, cac40) VALUES (?, ?, ?, ?)",
-            (date.today().isoformat(), valeur_totale, liquidites_, cac40),
+            "INSERT OR REPLACE INTO historique (utilisateur_id, portefeuille, date, valeur, liquidites, cac40) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (uid, base.portefeuille_courant(uid), date.today().isoformat(), valeur_totale, liquidites_, cac40),
         )
 
 
-def lire_historique() -> pd.DataFrame:
+def lire_historique(uid: int) -> pd.DataFrame:
     with base.ouvrir() as con:
-        df = pd.read_sql_query("SELECT * FROM historique ORDER BY date", con)
+        df = pd.read_sql_query(
+            "SELECT date, valeur, liquidites, cac40 FROM historique "
+            "WHERE utilisateur_id = ? AND portefeuille = ? ORDER BY date",
+            con, params=(uid, base.portefeuille_courant(uid)))
     if not df.empty:
         df["date"] = pd.to_datetime(df["date"])
     return df
