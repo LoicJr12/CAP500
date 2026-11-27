@@ -92,6 +92,7 @@ def analyser(code: str, cours: pd.DataFrame, ratios: pd.DataFrame, analystes: pd
         potentiel=potentiel,
         simulation=simulation,
         ratios=ratios.loc[code].to_dict() if code in ratios.index else {},
+        analystes=donnees.avis_analystes(analystes, code),
     )
 
 

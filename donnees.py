@@ -162,6 +162,25 @@ def charger_analystes() -> pd.DataFrame:
     return _lire_csv(config.FICHIER_ANALYSTES)
 
 
+def avis_analystes(analystes: pd.DataFrame, code: str) -> dict:
+    """
+    Objectif de cours d'une action avec sa provenance : {objectif, nb_analystes, avis, source, date}.
+    La contrainte C6 du cahier des charges demande que chaque recommandation cite ses sources et sa
+    date : l'objectif des analystes doit donc s'afficher avec la sienne, pas seulement le chiffre.
+    Renvoie {} si l'action n'a pas d'objectif renseigné.
+    """
+    objectif = objectif_analystes(analystes, code)
+    if objectif is None:
+        return {}
+    ligne = analystes[analystes["code"] == code].iloc[0]
+    detail = {"objectif": objectif}
+    for colonne in ("nb_analystes", "avis", "source", "date"):
+        valeur = ligne.get(colonne)
+        if valeur is not None and not pd.isna(valeur):
+            detail[colonne] = valeur
+    return detail
+
+
 def objectif_analystes(analystes: pd.DataFrame, code: str):
     """Objectif de cours médian des analystes pour une action, ou None."""
     if analystes.empty or "objectif" not in analystes.columns:

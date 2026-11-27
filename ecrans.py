@@ -752,8 +752,7 @@ def ecran_fiche_action(analyses: dict) -> None:
               accent=True, explication=f"Dernier prix connu, le {date_fr(analyse.date_cours)}.")
     style.kpi(c[1], "Avis des experts",
               variation(analyse.potentiel) if analyse.potentiel is not None else "Pas d'avis",
-              "de hausse attendue" if (analyse.potentiel or 0) > 0 else
-              "de baisse attendue" if analyse.potentiel is not None else "aucun objectif récent",
+              provenance_objectif(analyse),
               explication="Écart entre le prix visé par les experts des banques et le prix actuel.")
     style.kpi(c[2], "J'en possède",
               f"{nombre(position['quantite'], 0)} action{'s' if position['quantite'] > 1 else ''}" if position
@@ -867,6 +866,30 @@ def graphique_technique(df: pd.DataFrame) -> None:
     st.plotly_chart(fig, width="stretch", config={"displayModeBar": False})
     st.caption("RSI au-dessus de 70 : l'action a beaucoup monté ; sous 30 : elle a beaucoup baissé. "
                "MACD : barres vertes = élan à la hausse, rouges = élan à la baisse. Voir le Guide pour le détail.")
+
+
+def provenance_objectif(analyse) -> str:
+    """
+    Sous l'avis des experts : le sens de l'écart, puis la source et la date de l'objectif.
+    La contrainte C6 demande que chaque recommandation cite ses sources et sa date ; le chiffre
+    seul ne suffisait pas. Source et date viennent de `data/analystes.csv`.
+    """
+    if analyse.potentiel is None:
+        return "aucun objectif récent"
+    sens = "de hausse attendue" if analyse.potentiel > 0 else "de baisse attendue"
+    detail = analyse.analystes or {}
+    provenance = []
+    if detail.get("source"):
+        source = str(detail["source"])
+        # Une source peut lister plusieurs banques : on raccourcit pour la tuile, le détail
+        # complet reste lisible dans le fichier data/analystes.csv et dans Réglages → Données.
+        provenance.append(source if len(source) <= 38 else source[:37].rstrip(" ,(") + "…")
+    if detail.get("date"):
+        quand = str(detail["date"])
+        provenance.append(date_fr(quand) if "-" in quand else quand)
+    if not provenance:
+        return f"{sens} · source non renseignée"
+    return f"{sens} · objectif de {euros(detail['objectif'])} ({' · '.join(provenance)})"
 
 
 def afficher_detail(analyse, reglages: dict) -> None:

@@ -27,6 +27,7 @@ class Analyse:
     potentiel: Optional[float] = None
     simulation: Optional[dict] = None
     ratios: dict = field(default_factory=dict)
+    analystes: dict = field(default_factory=dict)   # objectif de cours + sa source et sa date (C6)
 
 
 def limiter(x: float, bas: float = -2.0, haut: float = 2.0) -> float:

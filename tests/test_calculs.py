@@ -83,6 +83,16 @@ def test_exercices_incomplets_et_dernier_exercice():
     assert financier.exercices_incomplets(pd.DataFrame()) == {}
 
 
+def test_objectif_des_analystes_porte_sa_source_et_sa_date():
+    """C6 : l'objectif de cours doit être affichable avec sa provenance, pas seulement le chiffre."""
+    analystes = donnees.charger_analystes()
+    detail = donnees.avis_analystes(analystes, "AI.PA")
+    assert detail["objectif"] == 209
+    assert detail["source"] and detail["date"]
+    assert donnees.avis_analystes(analystes, "RMS.PA") == {}      # objectif vide dans le fichier
+    assert donnees.avis_analystes(pd.DataFrame(), "AI.PA") == {}
+
+
 def test_note_financiere_meilleure_entreprise():
     ratios = pd.DataFrame({
         "croissance_ca": [0.10, 0.0], "marge_nette": [0.30, 0.05], "per": [10.0, 30.0],
