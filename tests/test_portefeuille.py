@@ -5,6 +5,7 @@ import pytest
 
 import base
 import config
+import moteur
 import portefeuille
 
 
@@ -149,3 +150,27 @@ def test_repartition_conseillee_valide(uid, profil):
     assert max(montants.values()) <= r["max_par_action"] * config.CAPITAL
     ok, _ = portefeuille.repartir(uid, montants, {c: 100.0 for c in config.ACTIONS}, TAUX)
     assert ok
+
+
+@pytest.mark.parametrize("profil", ["Prudent", "Équilibré", "Dynamique"])
+def test_repartition_ne_propose_que_ce_qu_on_conseille_d_acheter(uid, profil):
+    """Cohérence du discours : aucune entreprise sur laquelle on dit d'attendre ne reçoit d'argent."""
+    base.choisir_profil(uid, profil)
+    r = base.lire_reglages(uid)
+    scores = {"RMS.PA": 0.9, "AI.PA": 0.3, "TTE.PA": -0.2, "DSY.PA": -1.5, "CAP.PA": 1.5}
+    montants = portefeuille.repartition_conseillee(scores, r)
+    for code, montant in montants.items():
+        conseil = moteur.recommander(scores[code], False, r)
+        if conseil != "Acheter":
+            assert montant == 0, (profil, code, conseil, montant)
+    # Les liquidités restantes ne descendent jamais sous la réserve du profil
+    assert config.CAPITAL - sum(montants.values()) >= r["reserve_min"] * config.CAPITAL - 1
+
+
+def test_repartition_vide_quand_aucun_achat_conseille(uid):
+    """Aucun signal assez net : on ne propose rien plutôt que de contredire le conseil."""
+    base.choisir_profil(uid, "Prudent")        # seuil d'achat 0,8
+    r = base.lire_reglages(uid)
+    montants = portefeuille.repartition_conseillee({c: 0.4 for c in config.ACTIONS}, r)
+    assert set(montants) == set(config.ACTIONS)
+    assert sum(montants.values()) == 0

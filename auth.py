@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 
 import base
 import config
+import horloge
 
 ALPHABET_CODE = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"   # sans 0/O ni 1/I pour éviter les confusions
 ERREUR_CONNEXION = "Identifiant ou mot de passe incorrect."
@@ -86,7 +87,7 @@ def creer_compte(identifiant_: str, mot_de_passe: str, confirmation: str):
     with base.ouvrir() as con:
         uid = con.execute(
             "INSERT INTO utilisateurs (identifiant, sel, hash, cree_le) VALUES (?, ?, ?, ?)",
-            (identifiant_, sel, _hacher(mot_de_passe, sel), datetime.now().isoformat(timespec="seconds")),
+            (identifiant_, sel, _hacher(mot_de_passe, sel), horloge.maintenant().isoformat(timespec="seconds")),
         ).lastrowid
     return True, "Compte créé.", uid
 
@@ -102,7 +103,7 @@ def nouveau_code_recuperation(uid: int) -> str:
 
 def verifier(identifiant_: str, mot_de_passe: str, maintenant: datetime = None):
     """Vérifie les identifiants (logigramme 2). Renvoie (ok, message, uid)."""
-    maintenant = maintenant or datetime.now()
+    maintenant = maintenant or horloge.maintenant()
     compte = _compte(identifiant_)
     if compte is None:
         return False, ERREUR_CONNEXION, None
@@ -122,7 +123,7 @@ def mot_de_passe_oublie(identifiant_: str, code: str, mot_de_passe: str, confirm
     Nouveau mot de passe grâce au code de récupération. Le portefeuille est conservé.
     Le code ne sert qu'une fois. Renvoie (ok, message, uid).
     """
-    maintenant = maintenant or datetime.now()
+    maintenant = maintenant or horloge.maintenant()
     compte = _compte(identifiant_)
     if compte is None or not compte["code_hash"]:
         return False, "Identifiant ou code de récupération incorrect.", None
@@ -137,11 +138,15 @@ def mot_de_passe_oublie(identifiant_: str, code: str, mot_de_passe: str, confirm
     with base.ouvrir() as con:
         con.execute("UPDATE utilisateurs SET hash = ?, code_hash = NULL, essais = 0, bloque_jusqua = NULL "
                     "WHERE id = ?", (_hacher(mot_de_passe, compte["sel"]), compte["id"]))
+    fermer_autres_sessions(compte["id"])        # un nouveau mot de passe ferme les sessions ouvertes ailleurs
     return True, "Mot de passe modifié : votre portefeuille est conservé.", compte["id"]
 
 
-def changer_mot_de_passe(uid: int, actuel: str, mot_de_passe: str, confirmation: str):
-    """Change le mot de passe d'un compte connecté. Renvoie (ok, message)."""
+def changer_mot_de_passe(uid: int, actuel: str, mot_de_passe: str, confirmation: str, jeton: str = None):
+    """
+    Change le mot de passe d'un compte connecté. Renvoie (ok, message).
+    Les sessions ouvertes sur d'autres appareils sont fermées ; `jeton` est celle qu'on garde.
+    """
     compte = _compte(uid=uid)
     if not _egal(_hacher(actuel, compte["sel"]), compte["hash"]):
         return False, "Mot de passe actuel incorrect."
@@ -150,9 +155,96 @@ def changer_mot_de_passe(uid: int, actuel: str, mot_de_passe: str, confirmation:
         return False, erreur
     with base.ouvrir() as con:
         con.execute("UPDATE utilisateurs SET hash = ? WHERE id = ?", (_hacher(mot_de_passe, compte["sel"]), uid))
+    fermer_autres_sessions(uid, sauf=jeton)
     return True, "Mot de passe modifié."
 
 
 def verifier_mot_de_passe(uid: int, mot_de_passe: str) -> bool:
     compte = _compte(uid=uid)
     return compte is not None and _egal(_hacher(mot_de_passe, compte["sel"]), compte["hash"])
+
+
+# =====================================================================
+# Sessions : survivre au rafraîchissement de la page
+# =====================================================================
+# Streamlit perd `st.session_state` à chaque rechargement (F5) : sans jeton, la personne est
+# déconnectée dès qu'elle actualise la page. Le jeton est tiré au hasard (32 octets), transmis dans
+# l'adresse de la page et enregistré uniquement sous forme hachée. Il ne remplace pas le mot de
+# passe : il ne permet pas de le changer (`changer_mot_de_passe` redemande l'actuel).
+#
+# Limite assumée : le jeton apparaît dans la barre d'adresse, donc dans l'historique du navigateur
+# et sur un écran partagé. La fenêtre est volontairement courte (durée d'inactivité du compte) et
+# la session est supprimée à la déconnexion comme au changement de mot de passe.
+DUREE_SESSION_MIN = config.INACTIVITE_MIN
+
+
+def _hacher_jeton(jeton: str) -> str:
+    """SHA-256 suffit : le jeton est déjà 256 bits tirés au hasard, il n'y a rien à deviner."""
+    return hashlib.sha256(jeton.encode("utf-8")).hexdigest()
+
+
+def _fin_de_session(maintenant: datetime = None) -> str:
+    return ((maintenant or horloge.maintenant()) + timedelta(minutes=DUREE_SESSION_MIN)).isoformat()
+
+
+def ouvrir_session(uid: int, maintenant: datetime = None) -> str:
+    """Crée une session pour ce compte et renvoie le jeton à placer dans l'adresse de la page."""
+    purger_sessions(maintenant)
+    jeton = secrets.token_urlsafe(32)
+    with base.ouvrir() as con:
+        con.execute("INSERT INTO sessions (jeton_hash, utilisateur_id, expire_le) VALUES (?, ?, ?)",
+                    (_hacher_jeton(jeton), uid, _fin_de_session(maintenant)))
+    return jeton
+
+
+def session_valide(jeton: str, maintenant: datetime = None):
+    """
+    Renvoie l'identifiant interne du compte si le jeton correspond à une session encore valable,
+    sinon None. Chaque reprise repousse l'expiration (fenêtre glissante, comme l'inactivité).
+    """
+    if not jeton:
+        return None
+    maintenant = maintenant or horloge.maintenant()
+    with base.ouvrir() as con:
+        ligne = con.execute("SELECT utilisateur_id, expire_le FROM sessions WHERE jeton_hash = ?",
+                            (_hacher_jeton(jeton),)).fetchone()
+        if ligne is None:
+            return None
+        if datetime.fromisoformat(ligne["expire_le"]) <= maintenant:
+            con.execute("DELETE FROM sessions WHERE jeton_hash = ?", (_hacher_jeton(jeton),))
+            return None
+        con.execute("UPDATE sessions SET expire_le = ? WHERE jeton_hash = ?",
+                    (_fin_de_session(maintenant), _hacher_jeton(jeton)))
+        return ligne["utilisateur_id"]
+
+
+def prolonger_session(jeton: str, maintenant: datetime = None) -> None:
+    """Repousse l'expiration pendant que la personne travaille sans recharger la page."""
+    if jeton:
+        with base.ouvrir() as con:
+            con.execute("UPDATE sessions SET expire_le = ? WHERE jeton_hash = ?",
+                        (_fin_de_session(maintenant), _hacher_jeton(jeton)))
+
+
+def fermer_session(jeton: str) -> None:
+    """Déconnexion : la session ne peut plus servir, même si l'adresse a été copiée."""
+    if jeton:
+        with base.ouvrir() as con:
+            con.execute("DELETE FROM sessions WHERE jeton_hash = ?", (_hacher_jeton(jeton),))
+
+
+def fermer_autres_sessions(uid: int, sauf: str = None) -> None:
+    """Ferme les sessions ouvertes ailleurs (changement ou réinitialisation du mot de passe)."""
+    with base.ouvrir() as con:
+        if sauf:
+            con.execute("DELETE FROM sessions WHERE utilisateur_id = ? AND jeton_hash != ?",
+                        (uid, _hacher_jeton(sauf)))
+        else:
+            con.execute("DELETE FROM sessions WHERE utilisateur_id = ?", (uid,))
+
+
+def purger_sessions(maintenant: datetime = None) -> None:
+    """Supprime les sessions expirées (appelé à chaque connexion, pour borner la table)."""
+    with base.ouvrir() as con:
+        con.execute("DELETE FROM sessions WHERE expire_le <= ?",
+                    ((maintenant or horloge.maintenant()).isoformat(),))

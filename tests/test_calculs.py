@@ -56,6 +56,33 @@ def test_ratios_et_note_financiere():
         assert -2 <= note <= 2
 
 
+def test_ratios_malgre_un_exercice_incomplet():
+    """Un exercice récent partiel (EBITDA pas encore publié) ne doit pas effacer les ratios :
+    chaque donnée manquante reprend la dernière valeur connue."""
+    comptes = pd.DataFrame({
+        "code": ["AI.PA", "AI.PA"], "annee": [2024, 2025],
+        "chiffre_affaires": [27058.0, 26940.0], "resultat_net": [3306.0, 3518.0],
+        "bpa": [5.73, float("nan")], "dette_nette": [10150.0, 8416.0],
+        "ebitda": [7600.0, float("nan")], "dividende": [3.30, 3.70],
+    })
+    cours = {"AI.PA": serie_cours(depart=188, graine=2)}
+    ratios = financier.calculer_ratios(comptes, cours)
+    assert ratios.loc["AI.PA", "per"] > 0                       # BPA 2024 repris
+    assert ratios.loc["AI.PA", "dette_ebitda"] == pytest.approx(8416 / 7600)
+    assert ratios.loc["AI.PA", "croissance_ca"] == pytest.approx(26940 / 27058 - 1)
+
+
+def test_exercices_incomplets_et_dernier_exercice():
+    comptes = donnees.charger_comptes()
+    assert financier.dernier_exercice(comptes) >= 2025
+    manquants = financier.exercices_incomplets(comptes)
+    for code, colonnes in manquants.items():
+        assert code in config.ACTIONS
+        assert set(colonnes) <= set(financier.COLONNES_COMPTES)
+    assert financier.dernier_exercice(pd.DataFrame()) is None
+    assert financier.exercices_incomplets(pd.DataFrame()) == {}
+
+
 def test_note_financiere_meilleure_entreprise():
     ratios = pd.DataFrame({
         "croissance_ca": [0.10, 0.0], "marge_nette": [0.30, 0.05], "per": [10.0, 30.0],

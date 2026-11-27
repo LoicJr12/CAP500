@@ -3,13 +3,13 @@ Gestion du portefeuille : ordres (A7), valeur, protection contre les pertes (A8)
 répartition de départ, historique.
 """
 import math
-from datetime import date, datetime
 
 import pandas as pd
 
 import base
 import config
 import donnees
+import horloge
 from affichage import euros, nombre, pourcent
 
 
@@ -136,7 +136,7 @@ def passer_ordre(uid: int, code: str, sens: str, quantite, prix: float, taux: fl
         con.execute(
             "INSERT INTO ordres (utilisateur_id, portefeuille, date, code, sens, quantite, prix, frais, automatique) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (uid, base.portefeuille_courant(uid), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), code, sens,
+            (uid, base.portefeuille_courant(uid), horloge.maintenant().strftime("%Y-%m-%d %H:%M:%S"), code, sens,
              quantite, prix, frais, int(automatique)),
         )
     return True, (f"Ordre enregistré : {sens} de {nombre(quantite, 0)} {config.ACTIONS[code]} "
@@ -220,11 +220,17 @@ def repartir(uid: int, montants: dict, prix: dict, taux: float):
 def repartition_conseillee(scores: dict, reglages: dict) -> dict:
     """
     Répartition proposée selon le profil : plus le score est élevé, plus le montant est grand.
-    Les actions à vendre sont exclues, chaque action est plafonnée et la réserve est respectée.
+
+    Seules les entreprises dont le conseil du jour est « Acheter » reçoivent de l'argent, c'est-à-dire
+    celles dont le score atteint le seuil d'achat du profil (même règle que `moteur.recommander`) :
+    proposer une entreprise sur laquelle on dit d'attendre serait contradictoire avec le conseil
+    affiché. Le reste du capital est laissé en liquidités, et la proposition peut donc être vide
+    certains jours — en profil Prudent notamment, où le seuil d'achat est élevé.
+    Chaque action reste plafonnée et la réserve du profil est respectée.
     """
     budget = config.CAPITAL * (1 - reglages["reserve_min"] - 0.01)   # 1 % de marge pour les frais
     plafond = reglages["max_par_action"] * config.CAPITAL
-    poids = {c: s - reglages["seuil_vente"] for c, s in scores.items() if s > reglages["seuil_vente"]}
+    poids = {c: s - reglages["seuil_vente"] for c, s in scores.items() if s >= reglages["seuil_achat"]}
     montants = {c: 0.0 for c in scores}
     while poids and budget > 1:
         total = sum(poids.values())
@@ -250,7 +256,7 @@ def enregistrer_historique(uid: int, valeur_totale: float, liquidites_: float, c
         con.execute(
             "INSERT OR REPLACE INTO historique (utilisateur_id, portefeuille, date, valeur, liquidites, cac40) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (uid, base.portefeuille_courant(uid), date.today().isoformat(), valeur_totale, liquidites_, cac40),
+            (uid, base.portefeuille_courant(uid), horloge.aujourdhui().isoformat(), valeur_totale, liquidites_, cac40),
         )
 
 

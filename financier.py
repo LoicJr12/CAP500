@@ -40,6 +40,46 @@ def _division(a, b):
         return math.nan
 
 
+COLONNES_COMPTES = ["chiffre_affaires", "resultat_net", "bpa", "dette_nette", "ebitda", "dividende"]
+
+
+def _dernieres_valeurs(comptes_action: pd.DataFrame) -> pd.Series:
+    """
+    Pour chaque donnée, la valeur de l'exercice le plus récent où elle est renseignée.
+    Les comptes se remplissent souvent en plusieurs fois (le chiffre d'affaires est connu avant
+    l'EBITDA) : sans ce report, une seule case vide dans le dernier exercice ferait disparaître
+    le ratio correspondant au lieu d'utiliser la dernière valeur connue.
+    """
+    return comptes_action.ffill().iloc[-1]
+
+
+def exercices_incomplets(comptes: pd.DataFrame) -> dict:
+    """
+    {code: [données manquantes]} pour le dernier exercice de chaque action, et {} si tout est
+    renseigné. Sert à prévenir dans l'écran Données que les ratios reposent sur des comptes
+    partiels (voir `_dernieres_valeurs`).
+    """
+    if comptes.empty:
+        return {}
+    manquants = {}
+    for code in config.ACTIONS:
+        c = comptes[comptes["code"] == code].sort_values("annee")
+        if c.empty:
+            continue
+        dernier = c.iloc[-1]
+        vides = [col for col in COLONNES_COMPTES if col in c.columns and pd.isna(dernier[col])]
+        if vides:
+            manquants[code] = vides
+    return manquants
+
+
+def dernier_exercice(comptes: pd.DataFrame):
+    """Année du dernier exercice renseigné, ou None."""
+    if comptes.empty or "annee" not in comptes.columns:
+        return None
+    return int(comptes["annee"].max())
+
+
 def calculer_ratios(comptes: pd.DataFrame, cours: dict) -> pd.DataFrame:
     """
     Calcule les 5 ratios de chaque action.
@@ -53,9 +93,10 @@ def calculer_ratios(comptes: pd.DataFrame, cours: dict) -> pd.DataFrame:
         dernier = float(df["cloture"].iloc[-1]) if df is not None and not df.empty else math.nan
 
         if not c.empty:
-            n = c.iloc[-1]
-            if len(c) >= 2:
-                r["croissance_ca"] = _division(n["chiffre_affaires"], c.iloc[-2]["chiffre_affaires"]) - 1
+            n = _dernieres_valeurs(c)
+            ca = c["chiffre_affaires"].dropna()
+            if len(ca) >= 2:
+                r["croissance_ca"] = _division(ca.iloc[-1], ca.iloc[-2]) - 1
             r["marge_nette"] = _division(n["resultat_net"], n["chiffre_affaires"])
             if n["bpa"] > 0:
                 r["per"] = _division(dernier, n["bpa"])

@@ -40,8 +40,12 @@ def recommander(score: float, detenue: bool, reglages: dict) -> str:
     return "Ne rien faire"
 
 
-def construire_phrase(conseil: str, arguments: list, reglages: dict, nombre: int = 3) -> str:
-    """Algorithme A6 : garde les 3 arguments qui pèsent le plus dans le score."""
+def raisons(conseil: str, arguments: list, reglages: dict, nombre: int = 3) -> list:
+    """
+    Les arguments qui pèsent le plus dans le conseil, du plus lourd au plus léger.
+    Sert à la fois à l'argumentation (A6) et à l'affichage de la raison à côté du conseil :
+    les deux doivent montrer les mêmes signaux, sinon l'explication ne correspondrait pas.
+    """
     ponderes = [(a, a.valeur * reglages[CLES_POIDS[a.outil]]) for a in arguments]
     if conseil == "Acheter":
         choisis = sorted([p for p in ponderes if p[1] > 0], key=lambda p: -p[1])
@@ -49,7 +53,12 @@ def construire_phrase(conseil: str, arguments: list, reglages: dict, nombre: int
         choisis = sorted([p for p in ponderes if p[1] < 0], key=lambda p: p[1])
     else:
         choisis = sorted(ponderes, key=lambda p: -abs(p[1]))
-    textes = [de(a.texte) for a, _ in choisis[:nombre]]
+    return [a for a, _ in choisis[:nombre]]
+
+
+def construire_phrase(conseil: str, arguments: list, reglages: dict, nombre: int = 3) -> str:
+    """Algorithme A6 : garde les 3 arguments qui pèsent le plus dans le score."""
+    textes = [de(a.texte) for a in raisons(conseil, arguments, reglages, nombre)]
 
     fin = FINS_DE_PHRASE[conseil]
     if not textes:

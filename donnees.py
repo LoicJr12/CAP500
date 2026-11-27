@@ -5,12 +5,13 @@ analystes (fichiers CSV à remplir à la main), actualités (Google Actualités)
 import unicodedata
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import pandas as pd
 
 import base
 import config
+import horloge
 
 COLONNES_YF = {"Open": "ouverture", "High": "haut", "Low": "bas", "Close": "cloture", "Volume": "volume"}
 
@@ -209,7 +210,7 @@ def telecharger_actualites(code: str) -> bool:
         if source and titre.endswith(f" - {source}"):
             titre = titre[: -len(f" - {source}")]
         publie = entree.get("published_parsed")
-        quand = datetime(*publie[:6]).strftime("%Y-%m-%d %H:%M") if publie else datetime.now().strftime("%Y-%m-%d %H:%M")
+        quand = (horloge.de_utc(*publie[:6]) if publie else horloge.maintenant()).strftime("%Y-%m-%d %H:%M")
         lignes.append((lien, quand, code, titre, source, tonalite(titre)))
 
     with base.ouvrir() as con:
@@ -231,7 +232,7 @@ def lire_actualites(code: str, nombre: int = 5) -> list:
 
 def actualites_semaine(code: str) -> list:
     """Actualités des 7 derniers jours (utilisées par l'algorithme A2)."""
-    depuis = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+    depuis = (horloge.maintenant() - timedelta(days=7)).strftime("%Y-%m-%d")
     with base.ouvrir() as con:
         lignes = con.execute(
             "SELECT date, titre, tonalite FROM actualites WHERE code = ? AND date >= ? ORDER BY date DESC",

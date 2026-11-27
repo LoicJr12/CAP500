@@ -2,11 +2,16 @@
 code;nom;annee;chiffre_affaires;resultat_net;bpa;dette_nette;ebitda;dividende;source
 RMS.PA;Hermès;2023;13427;4311;41,20;-11200;6300;15,00;approximatif - à vérifier
 RMS.PA;Hermès;2024;15170;4603;44,00;-12200;6900;16,00;approximatif - à vérifier
+RMS.PA;Hermès;2025;16002;4524;;;;18,00;resultats annuels 2025 publies le 12/02/2026 - BPA, dette nette et EBITDA a completer
 AI.PA;Air Liquide;2023;27608;3078;5,36;10400;7400;3,20;approximatif - à vérifier
 AI.PA;Air Liquide;2024;27058;3306;5,73;10150;7600;3,30;approximatif - à vérifier
+AI.PA;Air Liquide;2025;26940;3518;;8416;;3,70;resultats annuels 2025 publies le 20/02/2026 - BPA et EBITDA a completer
 TTE.PA;TotalEnergies;2023;202000;19800;8,10;13500;45700;3,01;approximatif (converti de dollars) - à vérifier
 TTE.PA;TotalEnergies;2024;181000;14600;6,30;19000;39800;3,22;approximatif (converti de dollars) - à vérifier
+TTE.PA;TotalEnergies;2025;178000;11600;;;35900;3,40;resultats Q4/FY2025 du 10/02/2026, converti de dollars au taux moyen BCE 2025 de 1,13 - BPA et dette nette a completer
 DSY.PA;Dassault Systèmes;2023;5951;1051;0,80;-1000;2100;0,23;approximatif - à vérifier
 DSY.PA;Dassault Systèmes;2024;6213;1201;0,92;-1700;2250;0,26;approximatif - à vérifier
+DSY.PA;Dassault Systèmes;2025;6236;1196;0,90;;;0,27;resultats annuels 2025 - tresorerie nette et EBITDA a completer
 CAP.PA;Capgemini;2023;22522;1663;9,66;2000;3300;3,40;approximatif - à vérifier
 CAP.PA;Capgemini;2024;22096;1671;9,77;2000;3300;3,40;approximatif - à vérifier
+CAP.PA;Capgemini;2025;22465;1601;9,46;5306;;3,40;resultats annuels 2025 publies le 13/02/2026 - EBITDA a completer

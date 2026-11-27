@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import auth
 import base
 import config
+import horloge
 import portefeuille
 
 MDP = "MotDePasse2026"
@@ -80,6 +81,62 @@ def test_changer_mot_de_passe(uid):
     assert auth.verifier("client", "Nouveau2026!")[0]
 
 
+# ---------- Sessions (reprise après rafraîchissement de la page) ----------
+def test_session_reprise_puis_expiration(uid):
+    jeton = auth.ouvrir_session(uid)
+    assert auth.session_valide(jeton) == uid
+    assert auth.session_valide("jeton-invente") is None
+    assert auth.session_valide(None) is None
+    tard = horloge.maintenant() + timedelta(minutes=auth.DUREE_SESSION_MIN + 1)
+    assert auth.session_valide(jeton, tard) is None
+    assert auth.session_valide(jeton) is None          # la ligne expirée a été supprimée
+
+
+def test_session_fenetre_glissante(uid):
+    """Une personne active ne doit pas être déconnectée en actualisant la page."""
+    jeton = auth.ouvrir_session(uid)
+    presque = horloge.maintenant() + timedelta(minutes=auth.DUREE_SESSION_MIN - 1)
+    assert auth.session_valide(jeton, presque) == uid
+    encore = presque + timedelta(minutes=auth.DUREE_SESSION_MIN - 1)
+    assert auth.session_valide(jeton, encore) == uid
+
+
+def test_jeton_de_session_jamais_enregistre_en_clair(uid):
+    jeton = auth.ouvrir_session(uid)
+    with base.ouvrir() as con:
+        stockes = [l["jeton_hash"] for l in con.execute("SELECT jeton_hash FROM sessions")]
+    assert stockes and all(jeton not in s for s in stockes)
+
+
+def test_deconnexion_ferme_la_session(uid):
+    jeton = auth.ouvrir_session(uid)
+    auth.fermer_session(jeton)
+    assert auth.session_valide(jeton) is None
+
+
+def test_changer_mot_de_passe_ferme_les_sessions_ailleurs(uid):
+    ici, ailleurs = auth.ouvrir_session(uid), auth.ouvrir_session(uid)
+    ok, _ = auth.changer_mot_de_passe(uid, MDP, "Nouveau2026!", "Nouveau2026!", ici)
+    assert ok
+    assert auth.session_valide(ici) == uid              # la session courante est conservée
+    assert auth.session_valide(ailleurs) is None        # les autres appareils sont déconnectés
+
+
+def test_code_de_recuperation_ferme_toutes_les_sessions(uid):
+    code = auth.nouveau_code_recuperation(uid)
+    jeton = auth.ouvrir_session(uid)
+    ok, _, _ = auth.mot_de_passe_oublie("client", code, "Nouveau2026!", "Nouveau2026!")
+    assert ok
+    assert auth.session_valide(jeton) is None
+
+
+def test_purge_des_sessions_expirees(uid):
+    auth.ouvrir_session(uid)
+    auth.purger_sessions(horloge.maintenant() + timedelta(minutes=auth.DUREE_SESSION_MIN + 1))
+    with base.ouvrir() as con:
+        assert con.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 0
+
+
 def test_sauvegarde_quotidienne():
     copie = base.sauvegarder()
     assert copie.exists()
@@ -107,6 +164,72 @@ def test_restauration_refuse_un_ordre_invalide(uid):
     ok, message = base.importer_compte(uid, json.dumps(contenu).encode())
     assert not ok and "invalides" in message
     assert portefeuille.lire_ordres(uid).empty
+
+
+def test_restauration_conserve_le_profil_de_risque(uid):
+    """Un fichier sans profil ne doit pas renvoyer la personne au questionnaire."""
+    base.choisir_profil(uid, "Dynamique")
+    contenu = {"ordres": [], "historique": [], "reglages": {}}
+    ok, _ = base.importer_compte(uid, json.dumps(contenu).encode())
+    assert ok
+    reglages = base.lire_reglages(uid)
+    assert reglages["profil"] == "Dynamique"
+    assert reglages["profil_defini"]
+
+
+def test_restauration_applique_le_profil_du_fichier(uid):
+    """Si le fichier contient un profil, c'est lui qui s'applique."""
+    base.choisir_profil(uid, "Dynamique")
+    contenu = {"ordres": [], "historique": [],
+               "reglages": {"profil": "Prudent", "profil_defini": True}}
+    assert base.importer_compte(uid, json.dumps(contenu).encode())[0]
+    assert base.lire_reglages(uid)["profil"] == "Prudent"
+
+
+def test_restauration_refuse_un_portefeuille_impossible(uid):
+    """Un fichier retouché à la main ne doit pas permettre d'acheter sans l'argent nécessaire."""
+    contenu = {"ordres": [{"date": "2026-11-20 10:00:00", "code": "AI.PA", "sens": "achat",
+                           "quantite": 100_000, "prix": 180.0, "frais": 0.0}],
+               "historique": [], "reglages": {}}
+    ok, message = base.importer_compte(uid, json.dumps(contenu).encode())
+    assert not ok and "sans l'argent nécessaire" in message
+    assert portefeuille.lire_ordres(uid).empty
+    assert portefeuille.liquidites(uid) == config.CAPITAL
+
+
+def test_restauration_refuse_une_vente_sans_titres(uid):
+    """On ne peut pas vendre des actions que le portefeuille n'a jamais détenues."""
+    contenu = {"ordres": [{"date": "2026-11-20 10:00:00", "code": "AI.PA", "sens": "vente",
+                           "quantite": 10, "prix": 200.0, "frais": 0.2}],
+               "historique": [], "reglages": {}}
+    ok, message = base.importer_compte(uid, json.dumps(contenu).encode())
+    assert not ok and "qui n'étaient pas détenues" in message
+    assert portefeuille.liquidites(uid) == config.CAPITAL
+
+
+def test_restauration_accepte_un_aller_retour_complet(uid):
+    """Un portefeuille cohérent (achat puis vente du tout) reste accepté."""
+    portefeuille.passer_ordre(uid, "AI.PA", "achat", 100, 200.0, 0.001)
+    portefeuille.passer_ordre(uid, "AI.PA", "vente", 100, 210.0, 0.001)
+    ok, _ = base.importer_compte(uid, base.exporter_compte(uid))
+    assert ok
+
+
+def test_seul_le_compte_principal_modifie_les_donnees_partagees(uid):
+    """Les cours servent à tous les comptes : seul le premier compte créé peut les importer."""
+    _, _, autre = auth.creer_compte("bruno", MDP, MDP)
+    assert base.est_administrateur(uid)
+    assert not base.est_administrateur(autre)
+
+
+def test_base_configuree_pour_plusieurs_personnes():
+    """Journal WAL et clés étrangères : un affichage ne doit pas échouer parce qu'un autre écrit."""
+    con = base.connexion()
+    try:
+        assert con.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert con.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+    finally:
+        con.close()
 
 
 def test_conversion_d_une_base_de_l_ancienne_version(tmp_path, monkeypatch):

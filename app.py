@@ -6,20 +6,27 @@ Déroulement (logigramme 1 du dossier de conception) :
 connexion ou création de compte → [profil de risque] → [investissement du capital] → chargement des données et calculs → menu
 """
 import time
-from datetime import date
 
 import streamlit as st
 
+import auth
 import base
 import config
 import donnees
 import ecrans
+import horloge
 import portefeuille
 import style
 
 st.set_page_config(page_title=config.NOM_APPLI, page_icon=style.icone_page(), layout="wide")
 style.appliquer_style()
 base.initialiser()
+
+# ---------- Reprise après un rafraîchissement de la page (F5) ----------
+# Streamlit vide st.session_state à chaque rechargement : le jeton présent dans l'adresse
+# permet de retrouver le compte au lieu de renvoyer la personne à l'écran de connexion.
+if not st.session_state.get("connecte"):
+    ecrans.reprendre_session()
 
 # ---------- Déconnexion automatique après 30 minutes sans activité ----------
 if st.session_state.get("connecte"):
@@ -29,6 +36,11 @@ if st.session_state.get("connecte"):
         ecrans.deconnecter(f"Session fermée après {config.INACTIVITE_MIN} minutes sans activité.")
     else:
         st.session_state["derniere_activite"] = time.time()
+        # On repousse l'expiration en base sans écrire à chaque clic : une fois toutes les 5 minutes
+        # suffit pour qu'une personne active ne soit pas déconnectée en actualisant la page.
+        if time.time() - st.session_state.get("derniere_prolongation", 0) > config.PROLONGATION_SESSION_MIN * 60:
+            auth.prolonger_session(st.session_state.get("jeton"))
+            st.session_state["derniere_prolongation"] = time.time()
 
 # ---------- Connexion ou création de compte (logigramme 2) ----------
 if not st.session_state.get("connecte"):
@@ -41,7 +53,7 @@ if "code_a_noter" in st.session_state:          # juste après la création du c
 uid = st.session_state["uid"]
 
 # ---------- Chargement des données (logigramme 4) ----------
-statut = ecrans.actualiser_donnees(date.today().isoformat())
+statut = ecrans.actualiser_donnees(horloge.aujourdhui().isoformat())
 prix = donnees.cours_actuels()
 reglages = base.lire_reglages(uid)
 

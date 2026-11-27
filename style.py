@@ -216,6 +216,7 @@ section[data-testid="stSidebar"] hr {{ border-color: rgba(255,255,255,.12); }}
 /* Listes */
 .hk-ligne {{ font-size: .95rem; padding: .3rem 0; line-height: 1.4; }}
 .hk-ligne small {{ color: {GRIS}; }}
+.hk-raison {{ font-size: .78rem; color: {GRIS}; line-height: 1.3; margin-top: .25rem; }}
 .hk-entete-tableau {{ font-size: .72rem; font-weight: 700; color: {GRIS}; text-transform: uppercase; letter-spacing: .06em; }}
 .hk-argument {{ display: flex; gap: .65rem; padding: .6rem 0; border-top: 1px solid #F0F2F7; }}
 .hk-argument:first-child {{ border-top: none; }}

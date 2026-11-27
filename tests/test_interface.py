@@ -109,6 +109,87 @@ def test_parcours_profil_puis_investissement_avec_virgule(appli, uid):
     assert set(portefeuille.positions(uid)) == {"AI.PA", "TTE.PA"}
 
 
+def jeton_de(at: AppTest) -> str:
+    """Le jeton de session tel qu'il se trouve dans l'adresse de la page."""
+    valeur = at.query_params[ecrans.CLE_JETON]
+    return valeur[0] if isinstance(valeur, list) else valeur
+
+
+def test_rafraichir_la_page_ne_deconnecte_plus(appli, uid):
+    """Un F5 ouvre une session Streamlit vierge : seul le jeton de l'adresse subsiste."""
+    at = nouvelle_appli().run()
+    at.text_input(key="connexion_identifiant").set_value("client")
+    at.text_input(key="connexion_mdp").set_value("MotDePasse2026")
+    bouton(at, "Se connecter").click().run()
+    assert at.session_state["connecte"]
+    jeton = jeton_de(at)
+    assert jeton
+
+    rechargee = nouvelle_appli()
+    rechargee.query_params[ecrans.CLE_JETON] = jeton
+    rechargee.run()
+    assert not rechargee.exception, rechargee.exception
+    assert rechargee.session_state["connecte"]
+    assert rechargee.session_state["uid"] == uid
+
+
+def test_deconnexion_rend_le_jeton_inutilisable(appli, uid):
+    """Une adresse copiée ailleurs ne doit plus donner accès au compte après déconnexion."""
+    at = nouvelle_appli().run()
+    at.text_input(key="connexion_identifiant").set_value("client")
+    at.text_input(key="connexion_mdp").set_value("MotDePasse2026")
+    bouton(at, "Se connecter").click().run()
+    jeton = jeton_de(at)
+    bouton(at, "Se déconnecter").click().run()
+    assert "connecte" not in at.session_state
+
+    rechargee = nouvelle_appli()
+    rechargee.query_params[ecrans.CLE_JETON] = jeton
+    rechargee.run()
+    assert not rechargee.exception
+    assert "connecte" not in rechargee.session_state
+    assert [t.label for t in rechargee.tabs] == ["Se connecter", "Créer un compte"]
+
+
+def test_jeton_inconnu_renvoie_a_la_connexion(appli):
+    """Un jeton inventé ou expiré ne connecte personne et disparaît de l'adresse."""
+    at = nouvelle_appli()
+    at.query_params[ecrans.CLE_JETON] = "jeton-invente"
+    at.run()
+    assert not at.exception
+    assert "connecte" not in at.session_state
+    assert ecrans.CLE_JETON not in at.query_params
+
+
+def test_changer_la_periode_du_graphique(appli, uid):
+    """Le choix de la période est un radio horizontal : chaque période doit s'afficher sans erreur."""
+    at = lancer(uid, "Les actions")
+    for periode in ["1 mois", "1 an", "6 mois"]:
+        at.radio(key="periode_fiche").set_value(periode).run()
+        assert not at.exception, (periode, at.exception)
+        assert at.session_state["periode_fiche"] == periode
+
+
+def test_vendre_en_choisissant_l_operation(appli, uid):
+    """Le choix achat / vente est un radio horizontal : la bascule doit mener jusqu'à l'ordre."""
+    base.choisir_profil(uid, "Équilibré")
+    ok, _ = portefeuille.repartir(uid, {"AI.PA": 100_000}, donnees.cours_actuels(), 0.001)
+    assert ok
+    detenus = portefeuille.positions(uid)["AI.PA"]["quantite"]
+
+    at = lancer(uid, "Acheter / vendre")
+    at.selectbox(key="action_choisie").set_value("AI.PA").run()
+    at.radio(key="sens_ordre").set_value("Vendre").run()
+    assert not at.exception
+    at.radio(key="mode_saisie").set_value("En nombre d'actions").run()
+    at.text_input(key="quantite_ordre").set_value("10").run()
+    bouton(at, "Vendre").click().run()
+    bouton(at, "Oui, confirmer").click().run()
+    assert not at.exception
+    assert any("Ordre enregistré" in s.value for s in at.success)
+    assert portefeuille.positions(uid)["AI.PA"]["quantite"] == detenus - 10
+
+
 def test_acheter_en_euros(appli, uid):
     base.choisir_profil(uid, "Équilibré")
     at = lancer(uid, "Acheter / vendre")

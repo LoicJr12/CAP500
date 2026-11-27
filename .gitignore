@@ -3,3 +3,10 @@ __pycache__/
 .pytest_cache/
 data/portefeuille.db
 data/sauvegardes/
+
+# Journaux d'outils (peuvent contenir une adresse e-mail ou un jeton)
+*.log
+
+# Fichiers temporaires du journal WAL de SQLite
+data/portefeuille.db-wal
+data/portefeuille.db-shm

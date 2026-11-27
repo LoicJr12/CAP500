@@ -5,7 +5,6 @@ Les textes sont écrits pour être compris par une personne qui ne connaît pas 
 import io
 import json
 import time
-from datetime import date, datetime
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -18,6 +17,7 @@ import config
 import donnees
 import financier
 import graphique
+import horloge
 import moteur
 import portefeuille
 import profil
@@ -69,11 +69,43 @@ def aller_a(page: str, code: str = None) -> None:
         st.session_state["action_choisie"] = code
 
 
+CLE_JETON = "s"        # nom du paramètre de session dans l'adresse de la page
+
+
 def deconnecter(message: str = None) -> None:
+    # La session est fermée en base avant de vider st.session_state : une adresse copiée
+    # ailleurs ne doit plus donner accès au compte après une déconnexion.
+    auth.fermer_session(st.session_state.get("jeton"))
+    st.query_params.pop(CLE_JETON, None)
     for cle in list(st.session_state.keys()):
         del st.session_state[cle]
     if message:
         st.session_state["message_connexion"] = message
+
+
+def page_de_depart(numero: int) -> str:
+    """Là où en est la personne : choisir son profil, investir son capital, ou l'accueil."""
+    if not base.lire_reglages(numero).get("profil_defini"):
+        return "Mon profil"
+    return "Accueil" if portefeuille.depart_fait(numero) else "Investir mon capital"
+
+
+def reprendre_session() -> bool:
+    """
+    Rattache la personne à son compte après un rafraîchissement de la page, grâce au jeton
+    présent dans l'adresse (Streamlit vide st.session_state à chaque rechargement).
+    Renvoie True si la session a été reprise.
+    """
+    jeton = st.query_params.get(CLE_JETON)
+    numero = auth.session_valide(jeton)
+    if numero is None:
+        if jeton:                                   # jeton inconnu ou expiré : on nettoie l'adresse
+            st.query_params.pop(CLE_JETON, None)
+        return False
+    st.session_state.update(connecte=True, uid=numero, identifiant=auth.identifiant(numero),
+                            derniere_activite=time.time(), jeton=jeton,
+                            derniere_prolongation=time.time(), page=page_de_depart(numero))
+    return True
 
 
 def pages_du_menu() -> list:
@@ -127,7 +159,7 @@ def recap(lignes: list, total: tuple = None) -> str:
 def actualiser_donnees(jour: str) -> dict:
     cours = donnees.mettre_a_jour_cours()
     actus = {code: donnees.telecharger_actualites(code) for code in config.ACTIONS}
-    return {"cours": cours, "actus": actus, "heure": datetime.now().strftime("%d/%m/%Y à %H:%M")}
+    return {"cours": cours, "actus": actus, "heure": horloge.maintenant().strftime("%d/%m/%Y à %H:%M")}
 
 
 @st.cache_data(ttl=3600, show_spinner="Calcul des conseils…")
@@ -136,7 +168,7 @@ def calculer_analyses(reglages_json: str, jeton: str) -> dict:
     cours = {code: donnees.lire_cours(code) for code in config.ACTIONS}
     ratios = financier.calculer_ratios(donnees.charger_comptes(), cours)
     analystes = donnees.charger_analystes()
-    graine = int(date.today().strftime("%Y%m%d"))   # même simulation toute la journée
+    graine = int(horloge.aujourdhui().strftime("%Y%m%d"))   # même simulation toute la journée
     analyses = {}
     for i, (code, df) in enumerate(cours.items()):
         if len(df) >= 2:
@@ -211,15 +243,11 @@ def ecran_connexion() -> None:
 def ouvrir_session(numero: int, identifiant: str, code: str = None) -> None:
     """Après connexion : on envoie la personne là où elle en est (profil, investissement ou accueil)."""
     base.sauvegarder()
-    reglages = base.lire_reglages(numero)
-    if not reglages.get("profil_defini"):
-        page = "Mon profil"
-    elif not portefeuille.depart_fait(numero):
-        page = "Investir mon capital"
-    else:
-        page = "Accueil"
+    jeton = auth.ouvrir_session(numero)
+    st.query_params[CLE_JETON] = jeton          # survit au rafraîchissement de la page
     st.session_state.update(connecte=True, uid=numero, identifiant=auth.identifiant(numero),
-                            derniere_activite=time.time(), page=page)
+                            derniere_activite=time.time(), jeton=jeton,
+                            derniere_prolongation=time.time(), page=page_de_depart(numero))
     if code:
         st.session_state["code_a_noter"] = code
     st.rerun()
@@ -335,8 +363,9 @@ def ecran_accueil(analyses: dict, prix: dict) -> None:
     portefeuille.enregistrer_historique(numero, etat["valeur"], etat["liquidites"], cac_dernier)
     pos = portefeuille.positions(numero)
     conseils = {code: moteur.conseiller(a, code in pos, reglages)[0] for code, a in analyses.items()}
+    raisons = {code: raison_courte(a, conseils[code], reglages) for code, a in analyses.items()}
 
-    style.entete(f"Bonjour {st.session_state.get('identifiant', '')}", date_longue(date.today()),
+    style.entete(f"Bonjour {st.session_state.get('identifiant', '')}", date_longue(horloge.aujourdhui()),
                  "Voici où en est votre portefeuille aujourd'hui.")
 
     if not portefeuille.depart_fait(numero):
@@ -367,7 +396,7 @@ def ecran_accueil(analyses: dict, prix: dict) -> None:
     gauche, droite = st.columns([2.3, 1])
     with gauche, st.container(border=True):
         st.markdown("### Les 5 entreprises et nos conseils")
-        tableau_actions(analyses, etat, conseils, pos)
+        tableau_actions(analyses, etat, conseils, raisons, pos)
     with droite, st.container(border=True):
         st.markdown("### Où est mon argent ?")
         graphique_repartition(prix, etat, pos)
@@ -420,7 +449,39 @@ def resume_du_jour(etat: dict, gain: float, conseils: dict, reglages: dict) -> N
     </div>""")
 
 
-def tableau_actions(analyses: dict, etat: dict, conseils: dict, pos: dict) -> None:
+def detail_conseils(analyses: dict, reglages: dict, pos: dict = None) -> None:
+    """
+    Pour chaque entreprise : le conseil, la phrase d'argumentation (A6) et les 4 notes.
+    Affiché sur place (dépliant) pour ne pas obliger à quitter l'écran en cours de saisie.
+    """
+    pos = pos or {}
+    for code, nom in config.ACTIONS.items():
+        analyse = analyses.get(code)
+        if analyse is None:
+            st.caption(f"**{nom}** : prix indisponible, aucun conseil aujourd'hui.")
+            continue
+        conseil, phrase = moteur.conseiller(analyse, code in pos, reglages)
+        notes = " · ".join(f"{textes.OUTILS[outil][0]} : {textes.verdict(note)}"
+                           for outil, note in analyse.notes.items())
+        html(f"<div class='hk-recap' style='display:block'>"
+             f"<b>{nom}</b> {style.pastille_conseil(conseil)}"
+             f"<div style='margin:.35rem 0 .2rem'>{style.echapper(phrase)}</div>"
+             f"<small style='color:{GRIS}'>{style.echapper(notes)}</small></div>")
+
+
+def raison_courte(analyse, conseil: str, reglages: dict) -> str:
+    """
+    La raison qui pèse le plus dans le conseil, en quelques mots, pour l'afficher juste à côté
+    de la pastille : la personne ne doit pas avoir à changer d'écran pour savoir pourquoi.
+    Le détail entre parenthèses est retiré (il reste visible dans « Les actions »).
+    """
+    choisies = moteur.raisons(conseil, analyse.arguments, reglages, nombre=1)
+    if not choisies:
+        return "aucun signal marqué aujourd'hui"
+    return choisies[0].texte.split(" (")[0]
+
+
+def tableau_actions(analyses: dict, etat: dict, conseils: dict, raisons: dict, pos: dict) -> None:
     largeurs = [2.6, 1.2, 1, 1.2, 0.9, 1.3, 0.9]
     entetes = [("Entreprise", ""), ("Prix", "Prix d'une action aujourd'hui"),
                ("Jour", "Évolution du prix depuis hier"), ("Conseil", "Notre conseil du jour"),
@@ -438,11 +499,12 @@ def tableau_actions(analyses: dict, etat: dict, conseils: dict, pos: dict) -> No
         valeur_ligne = quantite * analyse.cours
         html(f"<span class='hk-ligne'>{euros(analyse.cours)}</span>", cols[1])
         html(variation(analyse.variation_jour), cols[2])
-        html(style.pastille_conseil(conseils[code]), cols[3])
+        html(f"{style.pastille_conseil(conseils[code])}"
+             f"<div class='hk-raison'>{style.echapper(raisons[code])}</div>", cols[3])
         html(f"<span class='hk-ligne'>{nombre(quantite, 0)}</span>", cols[4])
         part = f"<br><small>{pourcent(valeur_ligne / etat['valeur'], 0)} du total</small>" if quantite else ""
         html(f"<div class='hk-ligne'>{euros(valeur_ligne, 0)}{part}</div>", cols[5])
-        cols[6].button("Voir", key=f"voir_{code}", help=f"Pourquoi ce conseil pour {nom} ?",
+        cols[6].button("Pourquoi ?", key=f"voir_{code}", help=f"Voir toutes les raisons du conseil pour {nom}",
                        on_click=aller_a, args=("Les actions", code), width="stretch")
 
 
@@ -503,8 +565,9 @@ def ecran_repartition(prix: dict, analyses: dict) -> None:
         c1, c2 = st.columns([2.6, 1.4], vertical_alignment="center")
         html(f"<div style='display:flex;gap:.8rem;align-items:center'>{style.rond('conseil', OR)}<div>"
              f"<b>Vous ne savez pas comment répartir ?</b><br><span style='color:{GRIS};font-size:.92rem'>"
-             f"CAP 500 propose une répartition selon nos conseils et votre profil {r['profil']}. "
-             f"Vous pourrez la modifier avant de valider.</span></div></div>", c1)
+             f"CAP 500 ne propose que les entreprises dont le conseil du jour est « Acheter », "
+             f"selon votre profil {r['profil']} ; le reste est gardé de côté. "
+             f"Vous pourrez modifier la proposition avant de valider.</span></div></div>", c1)
         c2.button("Proposer une répartition", type="primary", icon=":material/auto_awesome:", width="stretch",
                   on_click=proposer_repartition, args=({c: a.score for c, a in analyses.items()},))
 
@@ -521,9 +584,12 @@ def ecran_repartition(prix: dict, analyses: dict) -> None:
         for code, nom in config.ACTIONS.items():
             cols = st.columns(largeurs, vertical_alignment="center")
             analyse = analyses.get(code)
+            # « Vendre » est impossible ici : on ne détient encore rien (règle RG9, moteur.recommander)
             conseil = moteur.recommander(analyse.score, False, r) if analyse else None
+            raison = f"<div class='hk-raison'>{style.echapper(raison_courte(analyse, conseil, r))}</div>" \
+                if analyse else ""
             html(f"<div class='hk-ligne'><b>{nom}</b> {style.pastille_conseil(conseil) if conseil else ''}"
-                 f"<br><small>{textes.SECTEURS[code]}</small></div>", cols[0])
+                 f"<br><small>{textes.SECTEURS[code]}</small>{raison}</div>", cols[0])
             html(f"<span class='hk-ligne'>{euros(prix.get(code))}</span>", cols[1])
             montant = champ_nombre(f"Montant {nom}", f"montant_{code}", conteneur=cols[2], masquer_libelle=True,
                                    exemple="0")
@@ -533,6 +599,8 @@ def ecran_repartition(prix: dict, analyses: dict) -> None:
             nb = portefeuille.quantite_possible(montants[code], prix.get(code), taux)
             html(f"<span class='hk-ligne'>{nombre(nb, 0)}</span>", cols[3])
             html(f"<span class='hk-ligne'>{pourcent(montants[code] / config.CAPITAL, 0)}</span>", cols[4])
+        with st.expander("Pourquoi ces conseils ? Le détail des 5 entreprises"):
+            detail_conseils(analyses, r)
 
     total = sum(montants.values())
     reste = config.CAPITAL - total
@@ -563,11 +631,39 @@ def ecran_repartition(prix: dict, analyses: dict) -> None:
         tout_sur_une = any(m >= TOUT_LE_CAPITAL * config.CAPITAL for m in montants.values())
         st.warning(f"Vous allez investir {euros(total)} au prix du jour"
                    f"{', dont tout votre capital sur une seule action' if tout_sur_une else ''}. On confirme ?")
+        # On ne valide pas sans avoir vu, pour chaque entreprise achetée, le conseil et sa raison.
+        recapitulatif_conseils(montants, analyses, r)
         c1, c2, _ = st.columns([1, 1, 2])
         c1.button("Oui, investir", type="primary", icon=":material/check:", on_click=confirmer_repartition,
                   width="stretch")
         c2.button("Modifier", icon=":material/edit:", width="stretch",
                   on_click=lambda: st.session_state.pop("repartition_en_attente", None))
+
+
+def recapitulatif_conseils(montants: dict, analyses: dict, reglages: dict) -> None:
+    """
+    Récapitulatif affiché juste avant de valider : chaque entreprise où de l'argent est placé,
+    avec le conseil du jour et la raison. Le but est qu'on ne puisse pas investir sans avoir lu
+    pourquoi, et qu'un achat contraire au conseil soit signalé avant d'être validé.
+    """
+    lignes, contre_avis = [], []
+    for code, montant in montants.items():
+        analyse = analyses.get(code)
+        if montant <= 0 or analyse is None:
+            continue
+        conseil = moteur.recommander(analyse.score, False, reglages)
+        raison = raison_courte(analyse, conseil, reglages)
+        lignes.append(f"<div class='hk-recap'><span>{config.ACTIONS[code]} · "
+                      f"<small style='color:{GRIS}'>{style.echapper(raison)}</small></span>"
+                      f"<b>{euros(montant, 0)} {style.pastille_conseil(conseil)}</b></div>")
+        if conseil != "Acheter":
+            contre_avis.append(config.ACTIONS[code])
+    if lignes:
+        html("".join(lignes))
+    if contre_avis:
+        st.info(f"Nous ne conseillons pas l'achat de {', '.join(contre_avis)} aujourd'hui : les signaux ne "
+                "sont pas assez nets. Vous pouvez investir quand même, c'est votre décision.",
+                icon=":material/info:")
 
 
 TOUT_LE_CAPITAL = 0.99   # à partir de 99 % du capital sur une action, on parle de « tout le capital »
@@ -593,11 +689,23 @@ def avertir_concentration(depassements: list, reste: float, reserve: float, plaf
 
 
 def proposer_repartition(scores: dict) -> None:
-    proposition = portefeuille.repartition_conseillee(scores, base.lire_reglages(uid()))
+    reglages = base.lire_reglages(uid())
+    proposition = portefeuille.repartition_conseillee(scores, reglages)
     for code in config.ACTIONS:
         montant = proposition.get(code, 0)
         st.session_state[f"montant_{code}"] = texte_nombre(montant, 0) if montant else ""
     st.session_state.pop("repartition_en_attente", None)
+    # La proposition ne retient que les entreprises conseillées à l'achat : certains jours,
+    # aucune ne l'est. Il faut le dire, sinon la page semble simplement ne pas avoir répondu.
+    retenues = [config.ACTIONS[c] for c, m in proposition.items() if m > 0]
+    if not retenues:
+        flash("info", f"Aujourd'hui, nous ne conseillons l'achat d'aucune des 5 entreprises : les signaux "
+                      f"ne sont pas assez nets pour votre profil {reglages['profil']}. Vous pouvez attendre "
+                      f"quelques jours, ou saisir vous-même des montants ci-dessous.")
+    else:
+        garde = config.CAPITAL - sum(proposition.values())
+        flash("success", f"Proposition : {', '.join(retenues)}. {euros(garde, 0)} restent de côté, "
+                         "parce que nous ne proposons que les entreprises conseillées à l'achat.")
 
 
 def confirmer_repartition() -> None:
@@ -692,10 +800,12 @@ def ecran_fiche_action(analyses: dict) -> None:
         st.caption("Point vert : nouvelle plutôt bonne · rouge : plutôt mauvaise · gris : neutre.")
 
     with st.container(border=True):
-        titre, choix = st.columns([3, 1.3], vertical_alignment="center")
+        # Le radio prend plus de large que l'ancien sélecteur : la colonne de droite est élargie
+        # pour que les trois périodes tiennent sur une ligne.
+        titre, choix = st.columns([2.5, 1.8], vertical_alignment="center")
         titre.markdown("### Évolution du prix")
-        periode = choix.segmented_control("Période", ["1 mois", "6 mois", "1 an"], default="6 mois",
-                                          key="periode_fiche", label_visibility="collapsed") or "6 mois"
+        periode = choix.radio("Période", ["1 mois", "6 mois", "1 an"], index=1, horizontal=True,
+                              key="periode_fiche", label_visibility="collapsed")
         jours = {"1 mois": 21, "6 mois": 126, "1 an": 252}[periode]
         ind = graphique.indicateurs(donnees.lire_cours(code)).tail(jours)
         simple, technique = st.tabs(["Prix", "Indicateurs techniques (pour les connaisseurs)"])
@@ -811,14 +921,16 @@ def ecran_achat_vente(analyses: dict) -> None:
             return
         detenus = portefeuille.positions(numero).get(code, {}).get("quantite", 0)
         analyse = analyses.get(code)
+        conseil, phrase = (None, "")
         if analyse:
-            conseil, _ = moteur.conseiller(analyse, detenus > 0, r)
+            conseil, phrase = moteur.conseiller(analyse, detenus > 0, r)
             html(f"<div style='font-size:.9rem;color:{GRIS};margin:-.2rem 0 .4rem'>Notre conseil : "
-                 f"{style.pastille_conseil(conseil)} &nbsp;· vous en avez {nombre(detenus, 0)}</div>")
+                 f"{style.pastille_conseil(conseil)} &nbsp;· vous en avez {nombre(detenus, 0)}</div>"
+                 f"<div class='hk-raison' style='margin:-.1rem 0 .5rem'>{style.echapper(phrase)}</div>")
 
         question(2, "Que voulez-vous faire ?")
-        sens = st.segmented_control("Opération", ["Acheter", "Vendre"], default="Acheter", key="sens_ordre",
-                                    label_visibility="collapsed") or "Acheter"
+        sens = st.radio("Opération", ["Acheter", "Vendre"], horizontal=True, key="sens_ordre",
+                        label_visibility="collapsed")
 
         question(3, "Combien ?")
         mode = st.radio("Saisie", ["En euros", "En nombre d'actions"], horizontal=True, key="mode_saisie",
@@ -850,6 +962,13 @@ def ecran_achat_vente(analyses: dict) -> None:
             st.warning(f"Vous allez **{operation} {nombre(attente['quantite'], 0)} action"
                        f"{'s' if attente['quantite'] > 1 else ''} {config.ACTIONS[attente['code']]}** "
                        f"à {euros(attente['prix'])}. On confirme ?")
+            # La raison du conseil est rappelée au moment de décider, pas seulement en haut de l'écran.
+            if conseil:
+                st.caption(f"Notre conseil du jour : **{style.LIBELLES_CONSEIL[conseil]}**. {phrase}")
+                attendu = {"achat": "Acheter", "vente": "Vendre"}[attente["sens"]]
+                if conseil != attendu:
+                    st.info("Cette opération ne suit pas notre conseil du jour. Vous pouvez la faire "
+                            "quand même, c'est votre décision.", icon=":material/info:")
             c1, c2 = st.columns(2)
             c1.button("Oui, confirmer", type="primary", icon=":material/check:", on_click=confirmer_ordre,
                       width="stretch")
@@ -994,7 +1113,7 @@ def ecran_historique() -> None:
                 "Décidé par": ordres["automatique"].map({0: "Vous", 1: "Vente automatique"}),
             }).iloc[::-1], hide_index=True, width="stretch")
         st.download_button("Télécharger en Excel", icon=":material/download:", data=export_excel(ordres, hist),
-                           file_name=f"cap500_historique_{date.today():%Y-%m-%d}.xlsx",
+                           file_name=f"cap500_historique_{horloge.aujourdhui():%Y-%m-%d}.xlsx",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     with evolution:
         graphique_historique(numero)
@@ -1043,7 +1162,8 @@ def section_compte() -> None:
             mdp = st.text_input("Nouveau mot de passe", type="password")
             confirmation = st.text_input("Retapez le nouveau mot de passe", type="password")
             if st.form_submit_button("Modifier", type="primary"):
-                ok, message = auth.changer_mot_de_passe(numero, actuel, mdp, confirmation)
+                ok, message = auth.changer_mot_de_passe(numero, actuel, mdp, confirmation,
+                                                        st.session_state.get("jeton"))
                 (st.success if ok else st.error)(message)
 
         st.markdown("### Nouveau code de récupération")
@@ -1081,7 +1201,7 @@ def section_sauvegarde() -> None:
         st.write("Un fichier avec toutes vos opérations, votre historique et vos réglages. Utile si l'application "
                  "est en ligne : vous pourrez tout récupérer si les données sont effacées.")
         st.download_button("Télécharger ma sauvegarde", icon=":material/download:", data=base.exporter_compte(numero),
-                           file_name=f"cap500_{auth.identifiant(numero)}_{date.today():%Y-%m-%d}.json",
+                           file_name=f"cap500_{auth.identifiant(numero)}_{horloge.aujourdhui():%Y-%m-%d}.json",
                            mime="application/json")
     with st.container(border=True):
         st.markdown("### Restaurer une sauvegarde")
@@ -1135,22 +1255,55 @@ def formulaire_reglages() -> None:
                 st.success("Réglages enregistrés.")
 
 
+def etat_comptes(comptes: pd.DataFrame) -> None:
+    """
+    Prévient quand les comptes annuels sont en retard ou incomplets : l'analyse financière (A3)
+    compare alors un cours d'aujourd'hui à des comptes plus anciens, ce qui fausse le PER.
+    """
+    annee = financier.dernier_exercice(comptes)
+    if annee is None:
+        st.warning("Aucun compte annuel : l'analyse de la santé des entreprises ne compte pas "
+                   "dans les conseils. Remplissez `data/comptes.csv`.")
+        return
+    attendue = horloge.aujourdhui().year - 1       # les comptes de l'année N sont publiés début N+1
+    if annee < attendue:
+        st.warning(f"Le dernier exercice renseigné est {annee}, alors que les comptes {attendue} "
+                   f"devraient être disponibles. Le PER compare un prix d'aujourd'hui à un bénéfice "
+                   f"de {annee} : à mettre à jour depuis les rapports annuels.")
+    else:
+        st.caption(f"Dernier exercice renseigné : {annee}.")
+    incomplets = financier.exercices_incomplets(comptes)
+    if incomplets:
+        detail = " · ".join(f"**{config.ACTIONS[c]}** : {', '.join(v)}" for c, v in incomplets.items())
+        st.info(f"Données manquantes sur le dernier exercice ({detail}). En attendant, les calculs "
+                "utilisent la dernière valeur connue de chaque donnée.")
+
+
 def section_donnees() -> None:
     st.markdown("**Importer des prix** (si la mise à jour automatique ne fonctionne pas)")
-    st.caption("Fichier CSV avec au moins une colonne « date » et une colonne « clôture » (export ABC Bourse par exemple).")
-    code = st.selectbox("Entreprise concernée", list(config.ACTIONS) + [config.INDICE],
-                        format_func=lambda c: config.ACTIONS.get(c, "CAC 40"), key="code_import")
-    fichier = st.file_uploader("Fichier CSV", type=["csv", "txt"])
-    if fichier is not None and st.button("Importer"):
-        try:
-            nb = donnees.importer_csv_cours(fichier, code)
-            calculer_analyses.clear()
-            st.success(f"{nb} prix importés.")
-        except ValueError as erreur:
-            st.error(str(erreur))
+    if not base.est_administrateur(uid()):
+        # Les cours sont communs à tous les comptes : un import changerait la valeur des
+        # portefeuilles et les conseils de tout le monde.
+        st.info("Les prix sont communs à tous les comptes : seul le compte principal peut les importer. "
+                "Vous pouvez demander à la personne qui gère l'application de le faire.")
+    else:
+        st.caption("Fichier CSV avec au moins une colonne « date » et une colonne « clôture » "
+                   "(export ABC Bourse par exemple).")
+        st.caption(":orange[Attention : les prix importés servent à tous les comptes de l'application.]")
+        code = st.selectbox("Entreprise concernée", list(config.ACTIONS) + [config.INDICE],
+                            format_func=lambda c: config.ACTIONS.get(c, "CAC 40"), key="code_import")
+        fichier = st.file_uploader("Fichier CSV", type=["csv", "txt"])
+        if fichier is not None and st.button("Importer"):
+            try:
+                nb = donnees.importer_csv_cours(fichier, code)
+                calculer_analyses.clear()
+                st.success(f"{nb} prix importés.")
+            except ValueError as erreur:
+                st.error(str(erreur))
     st.divider()
     st.markdown("**Comptes annuels des entreprises** – fichier `data/comptes.csv`")
     comptes = donnees.charger_comptes()
+    etat_comptes(comptes)
     if not comptes.empty:
         st.dataframe(comptes, hide_index=True, width="stretch")
     st.markdown("**Objectifs des experts** – fichier `data/analystes.csv` (à mettre à jour chaque semaine)")

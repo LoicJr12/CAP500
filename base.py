@@ -4,12 +4,12 @@ Toutes les données sont dans un seul fichier : data/portefeuille.db
 """
 import json
 import sqlite3
-import tempfile
 from contextlib import closing, contextmanager
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
 
 import config
+import horloge
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS utilisateurs (
@@ -75,6 +75,14 @@ CREATE TABLE IF NOT EXISTS historique (
     PRIMARY KEY (utilisateur_id, portefeuille, date)
 );
 
+-- Sessions ouvertes : permettent de retrouver son compte après un rafraîchissement de la page
+-- (Streamlit perd st.session_state à chaque rechargement). Le jeton n'est jamais stocké en clair.
+CREATE TABLE IF NOT EXISTS sessions (
+    jeton_hash      TEXT PRIMARY KEY,
+    utilisateur_id  INTEGER NOT NULL REFERENCES utilisateurs (id) ON DELETE CASCADE,
+    expire_le       TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS reglages (
     utilisateur_id  INTEGER NOT NULL,
     cle             TEXT NOT NULL,
@@ -86,18 +94,26 @@ CREATE TABLE IF NOT EXISTS reglages (
 # Réglages qu'un fichier de sauvegarde peut contenir
 CLES_REGLAGES = {*config.REGLAGES_DEFAUT, "profil", "profil_defini", "depart_fait", "limite_atteinte"}
 
+# Réglages conservés depuis le compte quand le fichier restauré ne les contient pas
+CLES_PROFIL = {"profil", "profil_defini"}
 
-def connexion() -> sqlite3.Connection:
+
+def connexion(contraintes: bool = True) -> sqlite3.Connection:
     config.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(config.DB_PATH)
+    con = sqlite3.connect(config.DB_PATH, timeout=config.ATTENTE_BASE_S)
     con.row_factory = sqlite3.Row
+    # Journal WAL : plusieurs personnes peuvent lire pendant qu'une autre écrit (démo à plusieurs,
+    # application en ligne). Sans lui, un simple affichage de page peut échouer sur « database is locked ».
+    con.execute("PRAGMA journal_mode = WAL")
+    con.execute("PRAGMA synchronous = NORMAL")
+    con.execute(f"PRAGMA foreign_keys = {'ON' if contraintes else 'OFF'}")
     return con
 
 
 @contextmanager
-def ouvrir():
+def ouvrir(contraintes: bool = True):
     """À utiliser avec `with base.ouvrir() as con:` : enregistre puis ferme la connexion."""
-    con = connexion()
+    con = connexion(contraintes)
     try:
         yield con
         con.commit()
@@ -118,7 +134,7 @@ def initialiser() -> None:
 def _convertir_ancienne_base() -> None:
     """Ancienne version (un seul compte) : le compte et son portefeuille deviennent le compte n° 1."""
     copie_securite("avant_conversion")
-    with ouvrir() as con:
+    with ouvrir(contraintes=False) as con:   # les tables sont renommées puis supprimées : clés étrangères levées
         con.executescript("""
             DROP TRIGGER IF EXISTS ordres_non_modifiables;
             DROP TRIGGER IF EXISTS ordres_non_supprimables;
@@ -142,6 +158,17 @@ def _convertir_ancienne_base() -> None:
             DROP TABLE ancien_ordres; DROP TABLE ancien_historique; DROP TABLE ancien_reglages;
             DROP TABLE utilisateur;
         """)
+
+
+def est_administrateur(uid: int) -> bool:
+    """
+    Les cours et les actualités sont communs à tous les comptes : les modifier change la valeur des
+    portefeuilles et les conseils de tout le monde. Seul le compte principal (le premier créé,
+    celui de la personne qui installe l'application) peut donc importer des cours.
+    """
+    with ouvrir() as con:
+        premier = con.execute("SELECT MIN(id) FROM utilisateurs").fetchone()[0]
+    return premier is not None and uid == premier
 
 
 def portefeuille_courant(uid: int) -> int:
@@ -192,7 +219,7 @@ def sauvegarder():
     if not config.DB_PATH.exists():
         return None
     config.DOSSIER_SAUVEGARDES.mkdir(parents=True, exist_ok=True)
-    cible = config.DOSSIER_SAUVEGARDES / f"portefeuille_{date.today():%Y-%m-%d}.db"
+    cible = config.DOSSIER_SAUVEGARDES / f"portefeuille_{horloge.aujourdhui():%Y-%m-%d}.db"
     if not cible.exists():
         with closing(sqlite3.connect(config.DB_PATH)) as source, closing(sqlite3.connect(cible)) as copie:
             source.backup(copie)
@@ -205,7 +232,7 @@ def sauvegarder():
 def copie_securite(motif: str) -> Path:
     """Copie datée de la base avant une opération importante (jamais supprimée automatiquement)."""
     config.DOSSIER_SAUVEGARDES.mkdir(parents=True, exist_ok=True)
-    cible = config.DOSSIER_SAUVEGARDES / f"{motif}_{datetime.now():%Y-%m-%d_%H%M%S}.db"
+    cible = config.DOSSIER_SAUVEGARDES / f"{motif}_{horloge.maintenant():%Y-%m-%d_%H%M%S}.db"
     with closing(sqlite3.connect(config.DB_PATH)) as source, closing(sqlite3.connect(cible)) as copie:
         source.backup(copie)
     return cible
@@ -225,7 +252,7 @@ def exporter_compte(uid: int) -> bytes:
         reglages = {l["cle"]: json.loads(l["valeur"]) for l in con.execute(
             "SELECT cle, valeur FROM reglages WHERE utilisateur_id = ?", (uid,))}
     contenu = {"application": config.NOM_APPLI, "version": 2, "identifiant": identifiant,
-               "exporte_le": datetime.now().isoformat(timespec="seconds"),
+               "exporte_le": horloge.maintenant().isoformat(timespec="seconds"),
                "reglages": reglages, "ordres": ordres, "historique": historique}
     return json.dumps(contenu, ensure_ascii=False, indent=1).encode("utf-8")
 
@@ -238,6 +265,36 @@ def _ordre_valide(o) -> bool:
                 and float(o["prix"]) > 0 and float(o["frais"]) >= 0)
     except (KeyError, TypeError, ValueError):
         return False
+
+
+def _coherence_ordres(ordres: list):
+    """
+    Rejoue les ordres du fichier dans l'ordre pour vérifier qu'ils décrivent un portefeuille possible :
+    on ne peut pas dépenser plus que son argent, ni vendre des actions qu'on ne détient pas.
+    Renvoie un message d'erreur, ou None si tout est cohérent.
+    """
+    liquide = config.CAPITAL
+    detenus = {}
+    for o in ordres:
+        montant = o["quantite"] * float(o["prix"])
+        frais = float(o["frais"])
+        if o["sens"] == "achat":
+            if montant + frais > liquide + 0.01:
+                return ("Le fichier décrit un achat de "
+                        f"{o['quantite']} {config.ACTIONS[o['code']]} sans l'argent nécessaire : "
+                        "rien n'a été modifié.")
+            liquide -= montant + frais
+            detenus[o["code"]] = detenus.get(o["code"], 0) + o["quantite"]
+        else:
+            if o["quantite"] > detenus.get(o["code"], 0):
+                return (f"Le fichier décrit une vente de {o['quantite']} {config.ACTIONS[o['code']]} "
+                        "qui n'étaient pas détenues : rien n'a été modifié.")
+            detenus[o["code"]] -= o["quantite"]
+            liquide += montant - frais
+        if liquide < -0.01:        # des frais aberrants ne doivent pas non plus créer un découvert
+            return (f"Le fichier décrit un portefeuille à découvert après l'opération du {o['date']} : "
+                    "rien n'a été modifié.")
+    return None
 
 
 def importer_compte(uid: int, contenu: bytes):
@@ -254,6 +311,13 @@ def importer_compte(uid: int, contenu: bytes):
         return False, "Ce fichier n'est pas une sauvegarde de l'application."
     if not all(isinstance(o, dict) and _ordre_valide(o) for o in ordres):
         return False, "Le fichier contient des ordres invalides : rien n'a été modifié."
+    impossible = _coherence_ordres(ordres)
+    if impossible:
+        return False, impossible
+
+    # Un fichier sans profil de risque ne doit pas renvoyer la personne au questionnaire :
+    # on garde le profil déjà choisi sur ce compte pour les clés absentes du fichier.
+    reglages = {**{c: v for c, v in lire_reglages(uid).items() if c in CLES_PROFIL}, **reglages}
 
     nouveau = portefeuille_courant(uid) + 1
     with ouvrir() as con:

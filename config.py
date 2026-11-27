@@ -80,3 +80,9 @@ MAX_ESSAIS = 5
 DUREE_BLOCAGE_MIN = 15
 INACTIVITE_MIN = 30
 NB_SAUVEGARDES = 7
+
+# Attente maximale quand la base est occupée par une autre personne (secondes)
+ATTENTE_BASE_S = 15.0
+
+# Intervalle entre deux prolongations de la session en base (minutes)
+PROLONGATION_SESSION_MIN = 5
