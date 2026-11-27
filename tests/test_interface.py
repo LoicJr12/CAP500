@@ -161,6 +161,37 @@ def test_jeton_inconnu_renvoie_a_la_connexion(appli):
     assert ecrans.CLE_JETON not in at.query_params
 
 
+def test_fiche_action_resiste_a_une_analyse_mise_en_cache_avant_un_champ(appli, uid):
+    """
+    Les analyses sont gardées en cache : un objet enregistré par une version précédente de
+    `modele.Analyse` n'a pas les champs ajoutés depuis. L'écran doit se dégrader, pas planter.
+    """
+    import pickle
+
+    import donnees
+    import financier
+    import moteur
+    import config as cfg
+
+    df = donnees.lire_cours("AI.PA")
+    ratios = financier.calculer_ratios(donnees.charger_comptes(), {"AI.PA": df})
+    analyse = moteur.analyser("AI.PA", df, ratios, donnees.charger_analystes(), [],
+                              dict(cfg.REGLAGES_DEFAUT), graine=1)
+    ancienne = pickle.loads(pickle.dumps(analyse))
+    del ancienne.__dict__["analystes"]
+    assert ecrans.provenance_objectif(ancienne) == "de hausse attendue · source non renseignée"
+    assert "Citi" in ecrans.provenance_objectif(analyse)
+
+
+def test_la_version_de_la_structure_entre_dans_la_cle_du_cache():
+    """Changer la forme de `Analyse` doit invalider les analyses déjà en cache."""
+    import inspect
+
+    import modele
+    assert "version" in inspect.signature(ecrans.calculer_analyses.__wrapped__).parameters
+    assert isinstance(modele.VERSION_ANALYSE, int)
+
+
 def test_changer_la_periode_du_graphique(appli, uid):
     """Le choix de la période est un radio horizontal : chaque période doit s'afficher sans erreur."""
     at = lancer(uid, "Les actions")

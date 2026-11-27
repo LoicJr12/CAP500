@@ -18,6 +18,7 @@ import donnees
 import financier
 import graphique
 import horloge
+import modele
 import moteur
 import portefeuille
 import profil
@@ -163,7 +164,9 @@ def actualiser_donnees(jour: str) -> dict:
 
 
 @st.cache_data(ttl=3600, show_spinner="Calcul des conseils…")
-def calculer_analyses(reglages_json: str, jeton: str) -> dict:
+def calculer_analyses(reglages_json: str, jeton: str, version: int) -> dict:
+    """`version` n'est pas utilisé dans le calcul : il appartient à la clé du cache pour que
+    les analyses gardées par une version précédente de `modele.Analyse` soient recalculées."""
     reglages = json.loads(reglages_json)
     cours = {code: donnees.lire_cours(code) for code in config.ACTIONS}
     ratios = financier.calculer_ratios(donnees.charger_comptes(), cours)
@@ -180,7 +183,7 @@ def calculer_analyses(reglages_json: str, jeton: str) -> dict:
 def analyses_courantes(statut: dict) -> dict:
     reglages = base.lire_reglages(uid())
     cles = {k: reglages[k] for k in [*config.REGLAGES_DEFAUT, "var_max"]}
-    return calculer_analyses(json.dumps(cles, sort_keys=True), statut["heure"])
+    return calculer_analyses(json.dumps(cles, sort_keys=True), statut["heure"], modele.VERSION_ANALYSE)
 
 
 def tout_recalculer() -> None:
@@ -877,7 +880,7 @@ def provenance_objectif(analyse) -> str:
     if analyse.potentiel is None:
         return "aucun objectif récent"
     sens = "de hausse attendue" if analyse.potentiel > 0 else "de baisse attendue"
-    detail = analyse.analystes or {}
+    detail = getattr(analyse, "analystes", None) or {}   # tolère un objet mis en cache avant ce champ
     provenance = []
     if detail.get("source"):
         source = str(detail["source"])

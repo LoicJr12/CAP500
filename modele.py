@@ -1,4 +1,10 @@
 """Structures de données partagées entre les modules de calcul."""
+
+# Version de la structure `Analyse`. À augmenter dès qu'un champ est ajouté, retiré ou renommé :
+# les analyses sont gardées en cache par Streamlit, et un objet mis en cache par une version
+# précédente n'a pas les nouveaux champs. Sans ce numéro dans la clé du cache, l'écran plante
+# sur un AttributeError au lieu de recalculer.
+VERSION_ANALYSE = 2
 from dataclasses import dataclass, field
 from typing import Optional
 
